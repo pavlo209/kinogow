@@ -64,14 +64,13 @@ body {
   height: auto;
   max-height: 200px;
   object-fit: contain;
-<<<<<<< xdeewd-codex/update-website-design-for-modern-look
-=======
+
   height: 200px;
   object-fit: cover;
   height: 200px;
   object-fit: cover;
 
->>>>>>> master
+
 }
 
 .lot-content {
