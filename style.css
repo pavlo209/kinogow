@@ -59,6 +59,21 @@ body {
   transition: transform 0.2s ease-in-out;
 }
 
+.lot-img {
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+}
+
+.lot-content {
+  padding: 15px;
+}
+
+.lot-info {
+  font-size: 0.9rem;
+  color: #555;
+}
+
 .card-custom:hover,
 .lot-card:hover {
   transform: translateY(-4px);
