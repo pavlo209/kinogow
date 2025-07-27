@@ -115,7 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['max_bid']) && $userI
   <meta charset="UTF-8">
   <title><?php echo htmlspecialchars($car['name']); ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="modern.css">
+  <!-- Стилі підключаються у header.php -->
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <style>
     body {
@@ -178,9 +178,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['max_bid']) && $userI
       border: 1px solid #ccc;
       padding: 10px;
     }
-    .btn-warning {
-      background-color: #ffd60a;
-      color: #000;
+    .btn-accent {
+      background-color: #f46036;
+      color: #fff;
       font-weight: 500;
       border: none;
     }
@@ -277,7 +277,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['max_bid']) && $userI
           <div class="status lose">Вашу ставку перебито ❌</div>
         <?php endif; ?>
         <form method="post" class="d-grid gap-2 mt-2">
-          <button type="submit" class="btn btn-warning">Зробити ставку +100 €</button>
+          <button type="submit" class="btn btn-accent">Зробити ставку +100 €</button>
         </form>
         <form method="post" class="mt-3">
   <label for="max_bid" class="form-label">Максимальна ціна (€):</label>
