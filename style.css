@@ -58,9 +58,13 @@ body {
   overflow: hidden;
   transition: transform 0.2s ease-in-out;
 }
+<<<<<<< sw0d5z-codex/update-website-design-for-modern-look
+
+=======
 <<<<<<< z8skxk-codex/update-website-design-for-modern-look
 
 =======
+>>>>>>> master
 >>>>>>> master
 .lot-img {
   width: 100%;
@@ -77,12 +81,15 @@ body {
   color: #555;
 }
 
+<<<<<<< sw0d5z-codex/update-website-design-for-modern-look
+=======
 <<<<<<< z8skxk-codex/update-website-design-for-modern-look
 =======
 
 >>>>>>> master
 
 
+>>>>>>> master
 .card-custom:hover,
 .lot-card:hover {
   transform: translateY(-4px);
