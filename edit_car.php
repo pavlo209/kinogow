@@ -53,6 +53,7 @@ if (!is_array($gallery)) {
   <meta charset="UTF-8">
   <title>Редагування лота</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
   <style>
     .damage-thumb { max-width: 150px; border-radius: 4px; }
   </style>

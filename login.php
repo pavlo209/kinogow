@@ -29,6 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Вхід</title>
+  <link rel="stylesheet" href="style.css">
   <style>
     body { font-family: Arial; background: #f0f0f0; display: flex; justify-content: center; align-items: center; height: 100vh; }
     .login-box { background: #fff; padding: 20px; border-radius: 10px; width: 300px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
