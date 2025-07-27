@@ -19,21 +19,10 @@ if (!empty($_SESSION['user_id'])) {
 <!-- Bootstrap 5 CSS & JS -->
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<link rel="stylesheet" href="style.css">
 
-<!-- Додатковий стиль -->
+<!-- Додатковий стиль для повідомлень -->
 <style>
-  .nav-counter {
-    background: #dc3545;
-    color: #fff;
-    font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 12px;
-    margin-left: 6px;
-  }
-  .navbar-brand {
-    font-weight: bold;
-    font-size: 24px;
-  }
   .toast-container {
     position: fixed;
     top: 80px;
@@ -46,7 +35,7 @@ if (!empty($_SESSION['user_id'])) {
   }
 </style>
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top px-4">
+<nav class="navbar navbar-expand-lg navbar-custom sticky-top px-4">
   <a class="navbar-brand" href="index.php">🚗 AutoAuction</a>
   <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
     <span class="navbar-toggler-icon"></span>
@@ -57,7 +46,7 @@ if (!empty($_SESSION['user_id'])) {
       <li class="nav-item">
         <a class="nav-link" href="index.php">
           🏠 Головна
-          <span class="nav-counter bg-primary"><?php echo $activeLots; ?></span>
+          <span class="nav-counter"><?php echo $activeLots; ?></span>
         </a>
       </li>
 
