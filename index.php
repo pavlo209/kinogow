@@ -41,62 +41,6 @@ if ($userId) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-  <style>
-    body {
-      background-color: #f8f9fa;
-      font-family: 'Inter', sans-serif;
-    }
-    .lot-card {
-      border-radius: 12px;
-      background: #fff;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-      transition: transform 0.2s ease-in-out;
-      overflow: hidden;
-    }
-    .lot-card:hover {
-      transform: scale(1.01);
-    }
-    .lot-img {
-      width: 100%;
-      height: 200px;
-      object-fit: cover;
-    }
-    .lot-content {
-      padding: 15px;
-    }
-    .lot-title {
-      font-weight: 700;
-      font-size: 1.1rem;
-      margin-bottom: 5px;
-    }
-    .lot-info {
-      font-size: 0.9rem;
-      color: #555;
-    }
-    .lot-info i {
-      color: #007aff;
-      margin-right: 5px;
-    }
-    .lot-timer {
-      font-size: 0.9rem;
-      color: #d63384;
-      margin: 8px 0;
-    }
-    .lot-price {
-      font-weight: bold;
-      font-size: 1.1rem;
-    }
-    .fav-btn {
-      border: none;
-      background: none;
-      font-size: 1.3rem;
-      color: #dc3545;
-      cursor: pointer;
-    }
-    .fav-btn.outline {
-      color: #aaa;
-    }
-  </style>
 </head>
 <body>
 <?php include 'header.php'; ?>
@@ -119,7 +63,7 @@ if ($userId) {
       </select>
     </div>
     <div class="col-6 col-md-3">
-      <button class="btn btn-warning w-100">🔍 Фільтрувати</button>
+      <button class="btn btn-accent w-100">🔍 Фільтрувати</button>
     </div>
   </form>
 
@@ -158,7 +102,7 @@ if ($userId) {
               <div><i class="fa-solid fa-key"></i> VIN: <?php echo htmlspecialchars($car['vin']); ?></div>
             </div>
             <div class="lot-price mt-2">💰 €<?php echo number_format($topBid, 0, '.', ' '); ?></div>
-            <a href="lot.php?id=<?php echo $car['id']; ?>" class="btn btn-warning btn-sm mt-2 w-100">➡️ Переглянути</a>
+            <a href="lot.php?id=<?php echo $car['id']; ?>" class="btn btn-accent btn-sm mt-2 w-100">➡️ Переглянути</a>
           </div>
         </div>
       </div>
