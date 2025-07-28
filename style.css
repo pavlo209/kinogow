@@ -142,6 +142,19 @@ footer {
 }
 
 /* Auth pages */
+.auth-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .auth-container {
   width: 100%;
   max-width: 360px;
@@ -150,6 +163,7 @@ footer {
   padding: 2rem;
   border-radius: var(--radius);
   box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  animation: fadeInUp 0.6s ease forwards;
 }
 
 .auth-container h2 {
