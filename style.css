@@ -1,10 +1,12 @@
 :root {
   --primary: #38a3a5;
   --accent: #f46036;
+  --secondary: #f0a202;
   --dark: #323031;
   --light: #ffffff;
   --bg: #f7f7f7;
   --text: #333333;
+  --radius: 0.75rem;
 }
 
 body {
@@ -13,6 +15,7 @@ body {
   font-family: 'Inter', sans-serif;
   background-color: var(--bg);
   color: var(--text);
+  line-height: 1.4;
 }
 
 .navbar-custom {
@@ -61,16 +64,10 @@ body {
 
 .lot-img {
   width: 100%;
-  height: auto;
-  max-height: 200px;
-  object-fit: contain;
-
   height: 200px;
   object-fit: cover;
-  height: 200px;
-  object-fit: cover;
-
-
+  border-top-left-radius: var(--radius);
+  border-top-right-radius: var(--radius);
 }
 
 .lot-content {
@@ -142,4 +139,43 @@ footer {
     width: 100%;
     margin-bottom: 10px;
   }
+}
+
+/* Auth pages */
+.auth-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.auth-container {
+  width: 100%;
+  max-width: 360px;
+  margin: 80px auto;
+  background: var(--light);
+  padding: 2rem;
+  border-radius: var(--radius);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  animation: fadeInUp 0.6s ease forwards;
+}
+
+.auth-container h2 {
+  margin-bottom: 1rem;
+}
+
+.auth-container .btn-primary {
+  background-color: var(--primary);
+  border: none;
+}
+
+.auth-container .error {
+  color: #d00;
+  margin-bottom: 0.5rem;
 }
