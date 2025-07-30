@@ -117,123 +117,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['max_bid']) && $userI
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- Стилі підключаються у header.php -->
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<style>
-    body {
-      background-color: #f2f2f7;
-      color: #000;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    }
-    h1 {
-      font-weight: 700;
-    }
-    .main-img {
-      width: 100%;
-      border-radius: 12px;
-      object-fit: cover;
-      max-height: 400px;
-    }
-    .thumbs {
-      overflow-x: auto;
-    }
-    .thumbs img {
-      width: 75px;
-      height: 50px;
-      object-fit: cover;
-      margin-right: 6px;
-      cursor: pointer;
-      border-radius: 8px;
-      border: 2px solid transparent;
-    }
-    .thumbs img:hover {
-      border-color: #007aff;
-    }
-    .lot-price {
-      font-size: 1.5rem;
-      font-weight: bold;
-      color: #000;
-    }
-    .lot-price.user-bid {
-      color: #28a745;
-    }
-    .status {
-      font-weight: bold;
-      margin: 10px 0;
-    }
-    .status.win {
-      color: #28a745;
-    }
-    .status.lose {
-      color: #ff3b30;
-    }
-    .param-table td {
-      padding: 6px 10px;
-      font-size: 15px;
-      background-color: #e5e5ea;
-    }
-    .notes textarea {
-      width: 100%;
-      height: 90px;
-      margin-top: 10px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      padding: 10px;
-    }
-    .btn-accent {
-      background-color: #f46036;
-      color: #fff;
-      font-weight: 500;
-      border: none;
-    }
-    .btn-outline-primary {
-      border-radius: 12px;
-    }
-    .alert-info {
-      background-color: #d1d1d6;
-      color: #000;
-      border: none;
-      border-radius: 12px;
-    }
-    .alert-danger {
-      border-radius: 12px;
-    }
-
-    .max-bid-input {
-      max-width: 200px;
-    }
-
-    @media (max-width: 768px) {
-      h1 {
-        font-size: 1.5rem;
-      }
-      .main-img {
-        max-height: 250px;
-      }
-      .thumbs img {
-        width: 60px;
-        height: 40px;
-        margin-bottom: 6px;
-      }
-    }
-
-    @media (max-width: 576px) {
-      .lot-price {
-        font-size: 1.25rem;
-      }
-      .max-bid-input {
-        max-width: 100%;
-      }
-      .table-responsive {
-        font-size: 0.875rem;
-      }
-    }
-  </style>
   <script>
     function switchImage(src) {
       document.getElementById('mainImage').src = src;
     }
   </script>
 </head>
-<body>
+<body class="lot-page">
 <?php include 'header.php'; ?>
 <div class="container py-4">
   <h1 class="mb-4 text-center text-md-start"><?php echo htmlspecialchars($car['name']); ?></h1>
