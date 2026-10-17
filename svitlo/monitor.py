@@ -37,16 +37,68 @@ def _sync_locked(store: Store, bundle: ChartBundle) -> list[str]:
     return created
 
 
-def send_telegram(token: str, chat_id: str, text: str) -> str:
+def main_keyboard() -> dict:
+    return {
+        "keyboard": [
+            [{"text": "Додати адресу"}, {"text": "Мої адреси"}],
+            [{"text": "Де працює"}, {"text": "Як користуватись"}],
+            [{"text": "Сайт стеження"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def send_telegram(token: str, chat_id: str, text: str, reply_markup: dict | None = None) -> str:
     if not token.strip() or not chat_id.strip():
         return ""
     url = f"https://api.telegram.org/bot{token.strip()}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id.strip(), "text": text}, ensure_ascii=False).encode("utf-8")
+    payload = {"chat_id": chat_id.strip(), "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     request = urllib.request.Request(
         url,
-        data=payload,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
+    return _telegram_result(request)
+
+
+def send_telegram_photo(
+    token: str,
+    chat_id: str,
+    image: bytes,
+    caption: str,
+    reply_markup: dict | None = None,
+) -> str:
+    if not token.strip() or not chat_id.strip() or not image:
+        return ""
+    url = f"https://api.telegram.org/bot{token.strip()}/sendPhoto"
+    boundary = "----svitloBoundary"
+    caption = caption[:1000]
+    fields = {"chat_id": chat_id.strip(), "caption": caption}
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    body = bytearray()
+    for name, value in fields.items():
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.extend(value.encode("utf-8"))
+        body.extend(b"\r\n")
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(b'Content-Disposition: form-data; name="photo"; filename="card.png"\r\n')
+    body.extend(b"Content-Type: image/png\r\n\r\n")
+    body.extend(image)
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    return _telegram_result(request)
+
+
+def _telegram_result(request: urllib.request.Request) -> str:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             body = json.loads(response.read().decode("utf-8"))
@@ -140,7 +192,8 @@ def _sync_part(
         )
         return []
     target = chat_id or store.get_setting("telegram_chat_id")
-    status = send_telegram(store.get_setting("telegram_token"), target, text)
+    token = store.get_setting("telegram_token")
+    status = _send_notice(token, target, text, place, when, schedule_date, ranges, changed)
     store.add_notification(address_id, text, status)
     store.save_state(
         address_id,
@@ -152,6 +205,22 @@ def _sync_part(
         chart.updated_at.isoformat(),
     )
     return [text]
+
+
+def _send_notice(token: str, chat_id: str, text: str, place: str, when: str, schedule_date: str, ranges, changed: bool) -> str:
+    from svitlo.cards import render_schedule
+
+    card_text = f"{place}\n{when}, {schedule_date}"
+    if changed:
+        card_text = "Графік змінився\n" + card_text
+    if ranges:
+        card_text += "\n" + ", ".join(f"{start}–{end}" for start, end in ranges)
+    else:
+        card_text += "\nВідключень немає"
+    photo = send_telegram_photo(token, chat_id, render_schedule(card_text), text, main_keyboard())
+    if photo.startswith("не") or not photo:
+        return send_telegram(token, chat_id, text, main_keyboard())
+    return photo
 
 
 def _remember_chart(store: Store, part: str, chart: PublishedChart | None) -> None:

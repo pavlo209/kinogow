@@ -261,7 +261,12 @@ a {{ color:var(--accent); }}
 <body>
 <main>
   <h1>Графік світла за вашою адресою</h1>
-  <p class="lead">Надішліть боту населений пункт, вулицю і будинок — у відповідь прийде графік на сьогодні й на завтра. Те саме можна зберегти формою нижче.</p>
+  <p class="lead">Надішліть боту населений пункт, вулицю і будинок. У відповідь прийде картка графіка на сьогодні й на завтра.</p>
+  <div class="grid">
+    <article class="card"><strong>1. Населений пункт</strong><p class="hint">Луцьк, без слова «місто».</p></article>
+    <article class="card"><strong>2. Вулиця</strong><p class="hint">Волі, без «вул.».</p></article>
+    <article class="card"><strong>3. Будинок</strong><p class="hint">44а, літера разом із номером.</p></article>
+  </div>
   <p class="meta">{chart_line} Остання перевірка: {escape(last_check or "ще не було")}.</p>
   {banner}
   <div class="grid">

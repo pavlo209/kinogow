@@ -9,10 +9,38 @@ import urllib.request
 from svitlo.address_input import clean_place_line, looks_like_house, parse_address_message
 from svitlo.db import Store
 from svitlo.lookup import groups_for_address
-from svitlo.monitor import send_telegram
+from svitlo.cards import render_coverage, render_guide, render_schedule
+from svitlo.monitor import main_keyboard, send_telegram, send_telegram_photo
 from svitlo.report import build_report
 from svitlo.schedule import format_address
 from svitlo.source import ChartBundle, HttpChartClient
+
+SITE_URL = (
+    "https://energy.volyn.ua/spozhyvacham/perervy-u-elektropostachanni/"
+    "hrafik-vidkliuchen/page.php#move"
+)
+BUTTONS = {
+    "додати адресу": "add",
+    "мої адреси": "list",
+    "де працює": "where",
+    "як користуватись": "help",
+    "сайт стеження": "site",
+}
+
+
+class BotReply:
+    def __init__(self, text: str, image: bytes | None = None) -> None:
+        self.text = text
+        self.image = image
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.text
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.text == other
+        return NotImplemented
+
 
 HELP = (
     "Надішліть адресу, і я пришлю графік на сьогодні й на завтра.\n\n"
@@ -27,24 +55,36 @@ HELP = (
 )
 
 
-def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> str:
-    command = text.strip().split()[0].lower() if text.strip().startswith("/") else ""
+def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> BotReply:
+    cleaned = text.strip()
+    action = BUTTONS.get(cleaned.casefold())
+    command = cleaned.split()[0].lower() if cleaned.startswith("/") else ""
     command = command.split("@", 1)[0]
-    if command in {"/start", "/help"}:
+    if action == "help" or command in {"/start", "/help"}:
         store.clear_dialog(chat_id)
         store.set_dialog(chat_id, "city")
-        return HELP
+        return BotReply(HELP, render_guide())
+    if action == "add":
+        store.set_dialog(chat_id, "city")
+        return BotReply("Крок 1. Надішліть населений пункт, без слова «місто» чи «село».", render_guide())
+    if action == "where":
+        return BotReply(_coverage_text(store), render_coverage(_cities(store)))
+    if action == "site":
+        return BotReply(
+            "Офіційний графік Волиньобленерго:\n" + SITE_URL + "\n\n"
+            "Цей бот перевіряє збережені адреси кожні 5 хвилин і пише, коли години змінились."
+        )
     if command == "/cancel":
         store.clear_dialog(chat_id)
-        return "Гаразд, адресу не записую. Надішліть нову, коли будете готові."
-    if command == "/list":
-        return _list_text(store, chat_id, bundle)
+        return BotReply("Гаразд, адресу не записую. Натисніть «Додати адресу», коли будете готові.")
+    if action == "list" or command == "/list":
+        return BotReply(_list_text(store, chat_id, bundle), render_schedule(_list_text(store, chat_id, bundle)))
     if command == "/remove":
         removed = store.delete_last_for_chat(chat_id)
         if removed is None:
-            return "Збережених адрес ще немає."
+            return BotReply("Збережених адрес ще немає.")
         place = format_address(removed["city"], removed["street"], 0, 0, removed["house"])
-        return f"Прибрав адресу {place}."
+        return BotReply(f"Прибрав адресу {place}.")
 
     parsed = parse_address_message(text)
     if parsed:
@@ -56,10 +96,10 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> s
     step = dialog["step"] if dialog else "city"
     line = clean_place_line(text)
     if not line or line.startswith("/"):
-        return HELP
+        return BotReply(HELP, render_guide())
     if step == "street" and dialog is not None:
         store.set_dialog(chat_id, "house", dialog["city"], line)
-        return f"Вулиця: {line}. Тепер надішліть номер будинку."
+        return BotReply(f"Крок 3. Вулиця: {line}. Надішліть номер будинку, наприклад 15 або 44а.")
     if step == "house" and dialog is not None:
         if not looks_like_house(line):
             return "Потрібен номер будинку, наприклад 15 або 15а."
@@ -67,7 +107,7 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> s
         street = _without_house_suffix(dialog["street"], line)
         return _save_and_report(store, chat_id, dialog["city"], street, line, bundle)
     store.set_dialog(chat_id, "street", line, "")
-    return f"Населений пункт: {line}. Тепер надішліть вулицю без «вул.»."
+    return BotReply(f"Крок 2. Населений пункт: {line}. Надішліть вулицю без «вул.».")
 
 
 def remember_state(store: Store, address_id: int, bundle: ChartBundle) -> None:
@@ -123,7 +163,7 @@ def poll_once(store: Store, client: HttpChartClient) -> None:
         if bundle is None:
             bundle = client.load()
         reply = handle_text(store, str(chat["id"]), text, bundle)
-        send_telegram(token, str(chat["id"]), reply)
+        _deliver(token, str(chat["id"]), reply)
 
 
 def run_bot(store: Store, client: HttpChartClient, stop) -> None:
@@ -155,8 +195,36 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
             try:
                 reply = handle_text(store, str(chat["id"]), text, bundle)
             except Exception:
-                reply = "Не вдалося зібрати графік. Надішліть адресу ще раз трохи згодом."
-            send_telegram(token, str(chat["id"]), reply)
+                reply = BotReply("Не вдалося зібрати графік. Надішліть адресу ще раз трохи згодом.")
+            _deliver(token, str(chat["id"]), reply)
+
+
+def _deliver(token: str, chat_id: str, reply: BotReply) -> str:
+    if reply.image:
+        status = send_telegram_photo(token, chat_id, reply.image, reply.text, main_keyboard())
+        if status and not status.startswith("не"):
+            return status
+    return send_telegram(token, chat_id, reply.text, main_keyboard())
+
+
+def _cities(store: Store) -> list[str]:
+    if not hasattr(store, "catalog_cities"):
+        return []
+    return store.catalog_cities()
+
+
+def _coverage_text(store: Store) -> str:
+    cities = _cities(store)
+    listed = ", ".join(cities[:12]) if cities else "Луцьк, Ковель, Володимир"
+    extra = ""
+    if len(cities) > 12:
+        extra = f" і ще {len(cities) - 12}"
+    return (
+        "Бот працює у Волинській області.\n"
+        "Інші області України поки не підключені.\n\n"
+        f"У довіднику зараз: {listed}{extra}.\n"
+        "Збережені адреси перевіряються кожні 5 хвилин."
+    )
 
 
 def _search_site(store: Store, city: str, street: str) -> bool:
@@ -210,6 +278,7 @@ def _save_and_report(
             report = f"{report}\n\n{bundle.error}"
     elif checked:
         report = "Вашої адреси немає в графіках відключень."
+        return BotReply(report, render_schedule(f"{city}, {street}, {house}\n{report}"))
     else:
         report = build_report(
             city=city,
@@ -220,7 +289,7 @@ def _save_and_report(
             tomorrow=None,
         )
     remember_state(store, address_id, bundle)
-    return report
+    return BotReply(report, render_schedule(report))
 
 
 def _list_text(store: Store, chat_id: str, bundle: ChartBundle) -> str:

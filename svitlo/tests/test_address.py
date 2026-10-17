@@ -94,7 +94,7 @@ class BotFlowTest(unittest.TestCase):
 
     def test_step_by_step(self) -> None:
         bundle = _bundle()
-        self.assertIn("Тепер надішліть вулицю", handle_text(self.store, "9", "Луцьк", bundle))
+        self.assertIn("Надішліть вулицю", handle_text(self.store, "9", "Луцьк", bundle))
         self.assertIn("номер будинку", handle_text(self.store, "9", "Лесі Українки", bundle))
         reply = handle_text(self.store, "9", "7", bundle)
         self.assertIn("черга 1.1", reply)

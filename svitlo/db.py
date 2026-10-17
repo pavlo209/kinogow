@@ -235,6 +235,20 @@ class Store:
                 added += cursor.rowcount
         return added
 
+    def catalog_cities(self) -> list[str]:
+        with self._lock, self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT city, COUNT(*) AS n FROM queue_catalog
+                    GROUP BY city_key
+                    ORDER BY n DESC, city
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [str(row["city"]) for row in rows]
+
     def catalog_for_street(self, city: str, street: str) -> list[sqlite3.Row]:
         with self._lock, self._connect() as conn:
             return conn.execute(
