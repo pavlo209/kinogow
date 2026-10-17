@@ -1,0 +1,24 @@
+name = "pavlo-telegram-bot"
+main = "src/index.js"
+compatibility_date = "2026-10-17"
+account_id = "2f77cc9c0ac38112f25f83f8764564a2"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "BOT"
+class_name = "SvitloBot"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SvitloBot"]
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[observability]
+enabled = true

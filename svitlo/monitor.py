@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -57,6 +58,8 @@ def main_keyboard() -> dict:
 
 
 def send_telegram(token: str, chat_id: str, text: str, reply_markup: dict | None = None) -> str:
+    if os.environ.get("SVITLO_TELEGRAM", "1") == "0":
+        return "бот працює на Cloudflare"
     if not token.strip() or not chat_id.strip():
         return ""
     url = f"https://api.telegram.org/bot{token.strip()}/sendMessage"
@@ -78,6 +81,8 @@ def send_telegram_photo(
     caption: str,
     reply_markup: dict | None = None,
 ) -> str:
+    if os.environ.get("SVITLO_TELEGRAM", "1") == "0":
+        return "бот працює на Cloudflare"
     if not token.strip() or not chat_id.strip() or not image:
         return ""
     url = f"https://api.telegram.org/bot{token.strip()}/sendPhoto"

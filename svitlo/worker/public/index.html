@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Графік світла</title>
+<style>
+:root { color-scheme: light; --ink:#172033; --muted:#5c6b80; --bg:#eef3f8; --card:#fff; --line:#d7e0ea; --accent:#1d4e89; }
+* { box-sizing: border-box; }
+body { margin:0; font:16px/1.45 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
+main { max-width:880px; margin:0 auto; padding:28px 16px 64px; }
+img { width:100%; height:auto; max-height:420px; object-fit:cover; object-position:center 42%; display:block; border-radius:20px; }
+h1 { font-size:32px; line-height:1.15; margin:18px 0 8px; }
+p { color:var(--muted); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <img src="/hero.jpg" width="1280" height="720" alt="Вечірня вулиця і картка з годинами відключень">
+  <h1>Графік світла за вашою адресою</h1>
+  <p>Бот для Волинської області читає графік Волиньобленерго кожні 5 хвилин і пише, коли години змінюються.</p>
+  <div class="card">
+    <p>Відкрийте <a href="https://t.me/volunsvitlo_bot">@volunsvitlo_bot</a> і надішліть населений пункт, вулицю та будинок. Наприклад: Луцьк, Волі, 44а.</p>
+  </div>
+</main>
+</body>
+</html>

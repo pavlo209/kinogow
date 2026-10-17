@@ -42,6 +42,8 @@ class App:
 
     def start_background(self) -> None:
         threading.Thread(target=self._loop, name="svitlo-monitor", daemon=True).start()
+        if os.environ.get("SVITLO_TELEGRAM", "1") == "0":
+            return
         from svitlo.bot import run_bot
 
         threading.Thread(
