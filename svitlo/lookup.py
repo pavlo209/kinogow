@@ -14,16 +14,23 @@ class LookupBlocked(Exception):
     """Сайт віддав перевірку замість результату пошуку."""
 
 
-def assign_queue(store, address_id: int, city: str, street: str, house: str) -> None:
-    address = store.get_address(address_id)
-    if address is None or int(address["queue"]) > 0:
-        return
+def groups_for_address(store, city: str, street: str, house: str) -> "CatalogMatch":
+    from svitlo.catalog import CatalogMatch, match_catalog
+
+    hit = match_catalog(store.catalog_for_street(city, street), city, street, house)
+    if hit.street_known:
+        return hit
     try:
         matches = lookup_queues(city, street, house)
     except (LookupBlocked, urllib.error.URLError, TimeoutError, OSError):
-        return
-    if len(matches) == 1:
-        store.set_queue(address_id, matches[0][0], matches[0][1])
+        return CatalogMatch([], False, False, False)
+    return CatalogMatch(matches, bool(matches), bool(matches), False)
+
+
+def assign_queue(store, address_id: int, city: str, street: str, house: str) -> None:
+    hit = groups_for_address(store, city, street, house)
+    if len(hit.queues) == 1:
+        store.set_queue(address_id, hit.queues[0][0], hit.queues[0][1])
 
 
 def lookup_queues(city: str, street: str, house: str) -> list[tuple[int, int]]:
@@ -89,7 +96,9 @@ def house_in_spec(house: str, spec: str) -> bool:
 
 
 def _house_key(value: str) -> tuple[int, str]:
-    match = re.match(r"(\d+)\s*([a-zа-яіїєґ]?)", value.lower().replace(" ", ""))
+    folded = value.casefold().replace(" ", "")
+    folded = folded.translate(str.maketrans({"a": "а", "e": "е", "i": "і", "o": "о", "c": "с", "p": "р", "x": "х"}))
+    match = re.match(r"(\d+)([а-яіїєґ]?)", folded)
     if not match:
         return 0, ""
     return int(match.group(1)), match.group(2)

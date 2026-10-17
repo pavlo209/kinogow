@@ -12,6 +12,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _name_key(value: str) -> str:
+    return " ".join(value.casefold().replace("’", "'").replace("`", "'").split())
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -57,6 +61,18 @@ class Store:
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS queue_catalog (
+                    city_key TEXT NOT NULL,
+                    street_key TEXT NOT NULL,
+                    city TEXT NOT NULL,
+                    street TEXT NOT NULL,
+                    houses TEXT NOT NULL,
+                    queue INTEGER NOT NULL,
+                    subqueue INTEGER NOT NULL,
+                    enrolled INTEGER NOT NULL,
+                    gav TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (city_key, street_key, houses, queue, subqueue, gav)
                 );
                 """
             )
@@ -192,6 +208,42 @@ class Store:
                 """,
                 (chat_id, step, city, street),
             )
+
+    def import_queue_rows(self, rows: list[tuple]) -> int:
+        """rows: city, street, houses, queue, subqueue, enrolled, gav."""
+        added = 0
+        with self._lock, self._connect() as conn:
+            for city, street, houses, queue, subqueue, enrolled, gav in rows:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO queue_catalog (
+                        city_key, street_key, city, street, houses, queue, subqueue, enrolled, gav
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _name_key(city),
+                        _name_key(street),
+                        city,
+                        street,
+                        houses,
+                        queue,
+                        subqueue,
+                        1 if enrolled else 0,
+                        gav,
+                    ),
+                )
+                added += cursor.rowcount
+        return added
+
+    def catalog_for_street(self, city: str, street: str) -> list[sqlite3.Row]:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM queue_catalog
+                WHERE city_key = ? AND street_key = ?
+                """,
+                (_name_key(city), _name_key(street)),
+            ).fetchall()
 
     def clear_dialog(self, chat_id: str) -> None:
         with self._lock, self._connect() as conn:

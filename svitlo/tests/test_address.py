@@ -111,6 +111,34 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(self.store.list_for_chat("9"), [])
 
 
+class CatalogHouseTest(unittest.TestCase):
+    def test_voli_44a_and_spaced_letter(self) -> None:
+        from svitlo.catalog import match_catalog, parse_queue_table
+
+        html = """
+        <table>
+          <tr><td>Луцький</td><td>Луцьк</td><td>Волі</td><td>-, 30, 44 а, 44а</td><td>2.2</td><td>Не залучено</td></tr>
+          <tr><td>Луцький</td><td>Баїв</td><td>Набережна</td><td>10, 21, 21А</td><td>1.2</td><td>7</td></tr>
+        </table>
+        """
+        rows = [
+            {
+                "city": row.city,
+                "street": row.street,
+                "houses": row.houses,
+                "queue": row.queue,
+                "subqueue": row.subqueue,
+                "enrolled": 1 if row.enrolled else 0,
+            }
+            for row in parse_queue_table(html)
+        ]
+        voli = match_catalog(rows, "Луцьк", "Волі", "44а")
+        self.assertEqual(voli.queues, [(2, 2)])
+        baiv = match_catalog(rows, "Баїв", "Набережна", "21")
+        self.assertEqual(baiv.queues, [(1, 2)])
+        self.assertEqual(match_catalog(rows, "Баїв", "Набережна", "21А").queues, [(1, 2)])
+
+
 class ReportTest(unittest.TestCase):
     def test_unknown_queue_does_not_invent_hours(self) -> None:
         text = build_report(

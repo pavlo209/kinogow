@@ -390,7 +390,11 @@ def main() -> None:
     port = int(os.environ.get("SVITLO_PORT", "8765"))
     interval = int(os.environ.get("SVITLO_INTERVAL_SECONDS", "1200"))
     db_path = os.environ.get("SVITLO_DB", str(DEFAULT_DB))
-    app = App(Store(db_path), HttpChartClient(), interval_seconds=interval)
+    store = Store(db_path)
+    from svitlo.catalog import load_bundled_catalog
+
+    load_bundled_catalog(store)
+    app = App(store, HttpChartClient(), interval_seconds=interval)
     app.start_background()
     # Дати першій перевірці секунду, щоб не блокувати запуск, якщо мережа мовчить.
     threading.Thread(target=app.refresh, name="svitlo-first-check", daemon=True).start()

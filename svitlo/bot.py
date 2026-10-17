@@ -8,7 +8,7 @@ import urllib.request
 
 from svitlo.address_input import clean_place_line, looks_like_house, parse_address_message
 from svitlo.db import Store
-from svitlo.lookup import assign_queue
+from svitlo.lookup import groups_for_address
 from svitlo.monitor import send_telegram
 from svitlo.report import build_report
 from svitlo.schedule import format_address
@@ -49,7 +49,8 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> s
     parsed = parse_address_message(text)
     if parsed:
         store.clear_dialog(chat_id)
-        return _save_and_report(store, chat_id, parsed[0], parsed[1], parsed[2], bundle)
+        city, street, house = parsed
+        return _save_and_report(store, chat_id, city, _without_house_suffix(street, house), house, bundle)
 
     dialog = store.get_dialog(chat_id)
     step = dialog["step"] if dialog else "city"
@@ -63,7 +64,8 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> s
         if not looks_like_house(line):
             return "Потрібен номер будинку, наприклад 15 або 15а."
         store.clear_dialog(chat_id)
-        return _save_and_report(store, chat_id, dialog["city"], dialog["street"], line, bundle)
+        street = _without_house_suffix(dialog["street"], line)
+        return _save_and_report(store, chat_id, dialog["city"], street, line, bundle)
     store.set_dialog(chat_id, "street", line, "")
     return f"Населений пункт: {line}. Тепер надішліть вулицю без «вул.»."
 
@@ -157,6 +159,13 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
             send_telegram(token, str(chat["id"]), reply)
 
 
+def _without_house_suffix(street: str, house: str) -> str:
+    suffix = f" {house}".casefold()
+    if street.casefold().endswith(suffix):
+        return street[: -len(suffix)].strip()
+    return street
+
+
 def _save_and_report(
     store: Store,
     chat_id: str,
@@ -166,11 +175,14 @@ def _save_and_report(
     bundle: ChartBundle,
 ) -> str:
     address_id = store.save_place(city, street, house, chat_id)
-    assign_queue(store, address_id, city, street, house)
-    address = store.get_address(address_id)
-    groups = []
-    if address and int(address["queue"]) > 0:
-        groups = [(int(address["queue"]), int(address["subqueue"]))]
+    hit = groups_for_address(store, city, street, house)
+    if len(hit.queues) == 1:
+        store.set_queue(address_id, hit.queues[0][0], hit.queues[0][1])
+    groups = hit.queues
+    if not groups:
+        address = store.get_address(address_id)
+        if address and int(address["queue"]) > 0:
+            groups = [(int(address["queue"]), int(address["subqueue"]))]
     report = build_report(
         city=city,
         street=street,
@@ -179,7 +191,18 @@ def _save_and_report(
         today=None if bundle.error else bundle.today,
         tomorrow=None if bundle.error else bundle.tomorrow,
     )
-    if bundle.error:
+    if hit.not_enrolled and not groups:
+        report = (
+            f"{city}, {street}, {house}\n\n"
+            "Цю адресу не залучено до графіка погодинних відключень."
+        )
+    elif hit.street_known and not hit.house_known:
+        report = (
+            f"{city}, {street}, {house}\n\n"
+            "Такого будинку немає в переліку цієї вулиці. "
+            "Перевірте номер: для літери пишіть разом, наприклад 44а."
+        )
+    if bundle.error and groups:
         report = f"{report}\n\n{bundle.error}"
     remember_state(store, address_id, bundle)
     return report
@@ -191,7 +214,10 @@ def _list_text(store: Store, chat_id: str, bundle: ChartBundle) -> str:
         return "Збережених адрес ще немає. " + HELP
     parts = []
     for row in rows:
-        groups = [(int(row["queue"]), int(row["subqueue"]))] if int(row["queue"]) > 0 else []
+        hit = groups_for_address(store, row["city"], row["street"], row["house"])
+        groups = hit.queues or (
+            [(int(row["queue"]), int(row["subqueue"]))] if int(row["queue"]) > 0 else []
+        )
         parts.append(
             build_report(
                 city=row["city"],
