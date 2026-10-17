@@ -68,11 +68,22 @@ def slots_to_ranges(flags: tuple[bool, ...] | list[bool]) -> list[tuple[str, str
     return ranges
 
 
-def format_address(city: str, street: str, queue: int, subqueue: int) -> str:
-    place = city.strip()
+def format_address(
+    city: str,
+    street: str,
+    queue: int,
+    subqueue: int,
+    house: str = "",
+) -> str:
+    parts = [city.strip()]
     if street.strip():
-        place = f"{place}, {street.strip()}"
-    return f"{place} (черга {queue}.{subqueue})"
+        parts.append(street.strip())
+    if str(house).strip():
+        parts.append(str(house).strip())
+    place = ", ".join(parts)
+    if queue and subqueue:
+        return f"{place} (черга {queue}.{subqueue})"
+    return place
 
 
 def format_notice(

@@ -12,8 +12,12 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from svitlo.address_input import looks_like_house
+from svitlo.bot import remember_state
 from svitlo.db import Store
+from svitlo.lookup import assign_queue
 from svitlo.monitor import send_telegram, sync
+from svitlo.report import build_report
 from svitlo.schedule import format_address
 from svitlo.source import KYIV, HttpChartClient
 
@@ -36,8 +40,15 @@ class App:
         return sync(self.store, self.client.load())
 
     def start_background(self) -> None:
-        thread = threading.Thread(target=self._loop, name="svitlo-monitor", daemon=True)
-        thread.start()
+        threading.Thread(target=self._loop, name="svitlo-monitor", daemon=True).start()
+        from svitlo.bot import run_bot
+
+        threading.Thread(
+            target=run_bot,
+            args=(self.store, self.client, self._stop),
+            name="svitlo-bot",
+            daemon=True,
+        ).start()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -130,17 +141,33 @@ def make_handler(app: App):
 def add_address(app: App, form: dict[str, str]) -> str:
     city = " ".join(form.get("city", "").split())
     street = " ".join(form.get("street", "").split())
+    house = " ".join(form.get("house", "").split())
     if len(city) < 2 or len(city) > 80:
         return "Вкажіть назву населеного пункту, без слів «місто» чи «село»."
-    if len(street) > 80:
-        return "Назва вулиці задовга."
-    if not form.get("queue", "").isdigit() or not form.get("subqueue", "").isdigit():
-        return "Оберіть чергу і підчергу."
-    queue = int(form["queue"])
-    subqueue = int(form["subqueue"])
-    if queue not in range(1, 7) or subqueue not in (1, 2):
-        return "Черга має бути від 1 до 6, підчерга — 1 або 2."
-    app.store.add_address(city, street, queue, subqueue)
+    if len(street) < 2 or len(street) > 80:
+        return "Вкажіть назву вулиці без «вул.»."
+    if not looks_like_house(house):
+        return "Вкажіть номер будинку, наприклад 15 або 15а."
+    chat_id = app.store.get_setting("telegram_chat_id")
+    address_id = app.store.save_place(city, street, house, chat_id)
+    assign_queue(app.store, address_id, city, street, house)
+    address = app.store.get_address(address_id)
+    groups = []
+    if address is not None and int(address["queue"]) > 0:
+        groups = [(int(address["queue"]), int(address["subqueue"]))]
+    bundle = app.client.load()
+    report = build_report(
+        city=city,
+        street=street,
+        house=house,
+        groups=groups,
+        today=None if bundle.error else bundle.today,
+        tomorrow=None if bundle.error else bundle.tomorrow,
+    )
+    if chat_id:
+        status = send_telegram(app.store.get_setting("telegram_token"), chat_id, report)
+        app.store.add_notification(address_id, report, status)
+    remember_state(app.store, address_id, bundle)
     app.refresh()
     return ""
 
@@ -234,7 +261,7 @@ a {{ color:var(--accent); }}
 <body>
 <main>
   <h1>Графік світла за вашою адресою</h1>
-  <p class="lead">Вкажіть населений пункт і чергу. Сервіс сам перевіряє графік Волиньобленерго і пише, якщо години змінились, відключень сьогодні немає, або з’явились дані на завтра.</p>
+  <p class="lead">Надішліть боту населений пункт, вулицю і будинок — у відповідь прийде графік на сьогодні й на завтра. Те саме можна зберегти формою нижче.</p>
   <p class="meta">{chart_line} Остання перевірка: {escape(last_check or "ще не було")}.</p>
   {banner}
   <div class="grid">
@@ -247,24 +274,11 @@ a {{ color:var(--accent); }}
       <form class="panel" method="post" action="/addresses">
         <label for="city">Населений пункт</label>
         <input id="city" name="city" required maxlength="80" placeholder="Наприклад, Луцьк" autocomplete="address-level2">
-        <label for="street">Вулиця, якщо потрібна в тексті</label>
-        <input id="street" name="street" maxlength="80" placeholder="Лесі Українки" autocomplete="address-line1">
-        <div class="row">
-          <div>
-            <label for="queue">Черга</label>
-            <select id="queue" name="queue" required>
-              <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-              <option value="4">4</option><option value="5">5</option><option value="6">6</option>
-            </select>
-          </div>
-          <div>
-            <label for="subqueue">Підчерга</label>
-            <select id="subqueue" name="subqueue" required>
-              <option value="1">1</option><option value="2">2</option>
-            </select>
-          </div>
-        </div>
-        <p class="hint">Назву пункту пишіть без «місто» і «село», вулицю — без «вул.». Чергу один раз показує <a href="{OFFICIAL_SEARCH}">пошук адреси на сайті Волиньобленерго</a>. Далі години беруться з графіка черг самі.</p>
+        <label for="street">Вулиця</label>
+        <input id="street" name="street" required maxlength="80" placeholder="Лесі Українки" autocomplete="off">
+        <label for="house">Будинок</label>
+        <input id="house" name="house" required maxlength="12" placeholder="15" autocomplete="off">
+        <p class="hint">У боті <a href="https://t.me/volunsvitlo_bot">@volunsvitlo_bot</a> можна надіслати три рядки: населений пункт, вулиця, будинок. Назву пункту пишіть без «місто», вулицю без «вул.». Години беруться з <a href="{OFFICIAL_SEARCH}">графіка Волиньобленерго</a>.</p>
         <div class="actions"><button type="submit">Стежити за адресою</button></div>
       </form>
       <form method="post" action="/check" class="actions"><button class="secondary" type="submit">Перевірити зараз</button></form>
@@ -293,7 +307,7 @@ a {{ color:var(--accent); }}
 
 
 def _address_card(store: Store, row) -> str:
-    place = format_address(row["city"], row["street"], row["queue"], row["subqueue"])
+    place = format_address(row["city"], row["street"], row["queue"], row["subqueue"], row["house"])
     today = _hours_line(store, int(row["id"]), "today", "Сьогодні")
     tomorrow = _hours_line(store, int(row["id"]), "tomorrow", "На завтра")
     return f"""<article class="card">
@@ -327,7 +341,8 @@ def _hours_line(store: Store, address_id: int, part: str, title: str) -> str:
 def _notice(row) -> str:
     status = f' <span class="meta">({escape(row["telegram_status"])})</span>' if row["telegram_status"] else ""
     when = _local_time(row["created_at"])
-    return f'<p class="notice">{escape(row["body"])}{status}<br><span class="meta">{escape(when)}</span></p>'
+    body = escape(row["body"]).replace("\n", "<br>")
+    return f'<p class="notice">{body}{status}<br><span class="meta">{escape(when)}</span></p>'
 
 
 def _chart_line(today_label: str, today_updated: str, tomorrow_label: str) -> str:

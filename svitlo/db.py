@@ -27,7 +27,15 @@ class Store:
                     street TEXT NOT NULL DEFAULT '',
                     queue INTEGER NOT NULL,
                     subqueue INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    house TEXT NOT NULL DEFAULT '',
+                    chat_id TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS dialogs (
+                    chat_id TEXT PRIMARY KEY,
+                    step TEXT NOT NULL,
+                    city TEXT NOT NULL DEFAULT '',
+                    street TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS states (
                     address_id INTEGER NOT NULL,
@@ -52,32 +60,142 @@ class Store:
                 );
                 """
             )
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(addresses)")}
+        if "house" not in columns:
+            conn.execute("ALTER TABLE addresses ADD COLUMN house TEXT NOT NULL DEFAULT ''")
+        if "chat_id" not in columns:
+            conn.execute("ALTER TABLE addresses ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def add_address(self, city: str, street: str, queue: int, subqueue: int) -> int:
+    def add_address(
+        self,
+        city: str,
+        street: str,
+        queue: int,
+        subqueue: int,
+        house: str = "",
+        chat_id: str = "",
+    ) -> int:
         with self._lock, self._connect() as conn:
             existing = conn.execute(
                 """
                 SELECT id FROM addresses
                 WHERE lower(city) = lower(?) AND lower(street) = lower(?)
-                  AND queue = ? AND subqueue = ?
+                  AND lower(house) = lower(?) AND queue = ? AND subqueue = ?
+                  AND chat_id = ?
                 """,
-                (city, street, queue, subqueue),
+                (city, street, house, queue, subqueue, chat_id),
             ).fetchone()
             if existing:
                 return int(existing["id"])
             cursor = conn.execute(
                 """
-                INSERT INTO addresses (city, street, queue, subqueue, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO addresses (city, street, queue, subqueue, house, chat_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (city, street, queue, subqueue, utc_now()),
+                (city, street, queue, subqueue, house, chat_id, utc_now()),
             )
             return int(cursor.lastrowid)
+
+    def save_place(self, city: str, street: str, house: str, chat_id: str) -> int:
+        """Зберігає адресу. Якщо для цієї вулиці черга вже відома, підставляє її."""
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM addresses
+                WHERE lower(city) = lower(?) AND lower(street) = lower(?)
+                  AND lower(house) = lower(?) AND chat_id = ?
+                """,
+                (city, street, house, chat_id),
+            ).fetchone()
+            known = self._known_queue(conn, city, street)
+            if existing:
+                if known and int(existing["queue"]) == 0:
+                    conn.execute(
+                        "UPDATE addresses SET queue = ?, subqueue = ? WHERE id = ?",
+                        (known[0], known[1], existing["id"]),
+                    )
+                return int(existing["id"])
+            queue, subqueue = known or (0, 0)
+            cursor = conn.execute(
+                """
+                INSERT INTO addresses (city, street, queue, subqueue, house, chat_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (city, street, queue, subqueue, house, chat_id, utc_now()),
+            )
+            return int(cursor.lastrowid)
+
+    def set_queue(self, address_id: int, queue: int, subqueue: int) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE addresses SET queue = ?, subqueue = ? WHERE id = ?",
+                (queue, subqueue, address_id),
+            )
+
+    def known_queue(self, city: str, street: str) -> tuple[int, int] | None:
+        with self._lock, self._connect() as conn:
+            return self._known_queue(conn, city, street)
+
+    def _known_queue(self, conn: sqlite3.Connection, city: str, street: str) -> tuple[int, int] | None:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT queue, subqueue FROM addresses
+            WHERE lower(city) = lower(?) AND lower(street) = lower(?) AND queue > 0
+            """,
+            (city, street),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        return int(rows[0]["queue"]), int(rows[0]["subqueue"])
+
+    def get_address(self, address_id: int) -> sqlite3.Row | None:
+        with self._lock, self._connect() as conn:
+            return conn.execute("SELECT * FROM addresses WHERE id = ?", (address_id,)).fetchone()
+
+    def list_for_chat(self, chat_id: str) -> list[sqlite3.Row]:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM addresses WHERE chat_id = ? ORDER BY id",
+                (chat_id,),
+            ).fetchall()
+
+    def delete_last_for_chat(self, chat_id: str) -> sqlite3.Row | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM addresses WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM states WHERE address_id = ?", (row["id"],))
+            conn.execute("DELETE FROM addresses WHERE id = ?", (row["id"],))
+            return row
+
+    def get_dialog(self, chat_id: str) -> sqlite3.Row | None:
+        with self._lock, self._connect() as conn:
+            return conn.execute("SELECT * FROM dialogs WHERE chat_id = ?", (chat_id,)).fetchone()
+
+    def set_dialog(self, chat_id: str, step: str, city: str = "", street: str = "") -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dialogs (chat_id, step, city, street) VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET step = excluded.step, city = excluded.city, street = excluded.street
+                """,
+                (chat_id, step, city, street),
+            )
+
+    def clear_dialog(self, chat_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM dialogs WHERE chat_id = ?", (chat_id,))
 
     def delete_address(self, address_id: int) -> None:
         with self._lock, self._connect() as conn:

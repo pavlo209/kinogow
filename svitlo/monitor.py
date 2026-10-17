@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime
 
 from svitlo.db import Store
+from svitlo.lookup import assign_queue
 from svitlo.schedule import format_address, format_notice
 from svitlo.source import KYIV, ChartBundle, PublishedChart
 
@@ -59,30 +60,39 @@ def send_telegram(token: str, chat_id: str, text: str) -> str:
 
 
 def _sync_address(store: Store, address, bundle: ChartBundle) -> list[str]:
+    assign_queue(store, int(address["id"]), address["city"], address["street"], address["house"])
+    fresh = store.get_address(int(address["id"])) or address
+    queue = int(fresh["queue"])
+    subqueue = int(fresh["subqueue"])
+    if queue <= 0 or subqueue <= 0:
+        return []
+    place = format_address(fresh["city"], fresh["street"], queue, subqueue, fresh["house"])
+    chat_id = fresh["chat_id"]
     messages: list[str] = []
-    place = format_address(address["city"], address["street"], address["queue"], address["subqueue"])
     messages.extend(
         _sync_part(
             store,
-            address_id=int(address["id"]),
+            address_id=int(fresh["id"]),
             part=TODAY,
             when="Сьогодні",
             chart=bundle.today,
-            queue=int(address["queue"]),
-            subqueue=int(address["subqueue"]),
+            queue=queue,
+            subqueue=subqueue,
             place=place,
+            chat_id=chat_id,
         )
     )
     messages.extend(
         _sync_part(
             store,
-            address_id=int(address["id"]),
+            address_id=int(fresh["id"]),
             part=TOMORROW,
             when="На завтра",
             chart=bundle.tomorrow,
-            queue=int(address["queue"]),
-            subqueue=int(address["subqueue"]),
+            queue=queue,
+            subqueue=subqueue,
             place=place,
+            chat_id=chat_id,
         )
     )
     return messages
@@ -98,6 +108,8 @@ def _sync_part(
     queue: int,
     subqueue: int,
     place: str,
+    chat_id: str = "",
+    notify: bool = True,
 ) -> list[str]:
     if chart is None:
         store.clear_state(address_id, part)
@@ -116,11 +128,19 @@ def _sync_part(
         ranges=ranges,
         changed=changed,
     )
-    status = send_telegram(
-        store.get_setting("telegram_token"),
-        store.get_setting("telegram_chat_id"),
-        text,
-    )
+    if not notify:
+        store.save_state(
+            address_id,
+            part,
+            signature,
+            schedule_date,
+            json.dumps(ranges, ensure_ascii=False),
+            chart.image_url,
+            chart.updated_at.isoformat(),
+        )
+        return []
+    target = chat_id or store.get_setting("telegram_chat_id")
+    status = send_telegram(store.get_setting("telegram_token"), target, text)
     store.add_notification(address_id, text, status)
     store.save_state(
         address_id,
