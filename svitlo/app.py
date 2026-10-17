@@ -23,6 +23,7 @@ from svitlo.source import KYIV, HttpChartClient
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB = PACKAGE_DIR / "data" / "svitlo.db"
+HERO_PATH = PACKAGE_DIR / "static" / "hero.jpg"
 OFFICIAL_SEARCH = (
     "https://energy.volyn.ua/spozhyvacham/perervy-u-elektropostachanni/"
     "hrafik-vidkliuchen/page.php#move"
@@ -65,6 +66,9 @@ def make_handler(app: App):
             path = urllib.parse.urlsplit(self.path).path
             if path == "/health":
                 self._json({"ok": True, "addresses": len(app.store.list_addresses())})
+                return
+            if path == "/hero.jpg":
+                self._file(HERO_PATH, "image/jpeg")
                 return
             if path != "/":
                 self._text(404, "Сторінку не знайдено")
@@ -116,6 +120,18 @@ def make_handler(app: App):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _file(self, path: Path, content_type: str) -> None:
+            if not path.is_file():
+                self._text(404, "Сторінку не знайдено")
+                return
+            payload = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers()
             self.wfile.write(payload)
 
@@ -230,6 +246,8 @@ def render_page(app: App, request_path: str = "/") -> str:
 * {{ box-sizing: border-box; }}
 body {{ margin:0; font:16px/1.45 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }}
 main {{ max-width:980px; margin:0 auto; padding:28px 16px 64px; }}
+.hero {{ margin:0 0 22px; border-radius:20px; overflow:hidden; line-height:0; box-shadow:0 16px 40px rgba(14,28,47,.18); }}
+.hero img {{ width:100%; height:auto; max-height:420px; object-fit:cover; object-position:center 42%; display:block; }}
 h1 {{ font-size:32px; line-height:1.15; margin:0 0 8px; }}
 h2 {{ font-size:20px; margin:28px 0 12px; }}
 .lead {{ margin:0; color:var(--muted); max-width:68ch; }}
@@ -260,6 +278,9 @@ a {{ color:var(--accent); }}
 </head>
 <body>
 <main>
+  <figure class="hero">
+    <img src="/hero.jpg" width="1280" height="720" alt="Вечірня вулиця: у частині будинків світяться вікна, на передньому плані картка з годинами відключень">
+  </figure>
   <h1>Графік світла за вашою адресою</h1>
   <p class="lead">Надішліть боту населений пункт, вулицю і будинок. У відповідь прийде картка графіка на сьогодні й на завтра.</p>
   <div class="grid">
