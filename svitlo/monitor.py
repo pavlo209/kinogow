@@ -37,6 +37,13 @@ def _sync_locked(store: Store, bundle: ChartBundle) -> list[str]:
     return created
 
 
+def address_button(address_id: int, label: str) -> dict:
+    text = label.strip()
+    if len(text) > 60:
+        text = text[:57] + "…"
+    return {"inline_keyboard": [[{"text": text, "callback_data": f"open:{address_id}"}]]}
+
+
 def main_keyboard() -> dict:
     return {
         "keyboard": [
@@ -193,7 +200,9 @@ def _sync_part(
         return []
     target = chat_id or store.get_setting("telegram_chat_id")
     token = store.get_setting("telegram_token")
-    status = _send_notice(token, target, text, place, when, schedule_date, ranges, changed)
+    status = _send_notice(
+        token, target, text, place, when, schedule_date, ranges, changed, address_id
+    )
     store.add_notification(address_id, text, status)
     store.save_state(
         address_id,
@@ -207,7 +216,17 @@ def _sync_part(
     return [text]
 
 
-def _send_notice(token: str, chat_id: str, text: str, place: str, when: str, schedule_date: str, ranges, changed: bool) -> str:
+def _send_notice(
+    token: str,
+    chat_id: str,
+    text: str,
+    place: str,
+    when: str,
+    schedule_date: str,
+    ranges,
+    changed: bool,
+    address_id: int,
+) -> str:
     from svitlo.cards import render_schedule
 
     card_text = f"{place}\n{when}, {schedule_date}"
@@ -217,9 +236,10 @@ def _send_notice(token: str, chat_id: str, text: str, place: str, when: str, sch
         card_text += "\n" + ", ".join(f"{start}–{end}" for start, end in ranges)
     else:
         card_text += "\nВідключень немає"
-    photo = send_telegram_photo(token, chat_id, render_schedule(card_text), text, main_keyboard())
+    buttons = address_button(address_id, place)
+    photo = send_telegram_photo(token, chat_id, render_schedule(card_text), text, buttons)
     if photo.startswith("не") or not photo:
-        return send_telegram(token, chat_id, text, main_keyboard())
+        return send_telegram(token, chat_id, text, buttons)
     return photo
 
 

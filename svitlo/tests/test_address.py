@@ -145,8 +145,11 @@ class BotFlowTest(unittest.TestCase):
         bundle = _bundle()
         handle_text(self.store, "9", "Луцьк, Лесі Українки, 4", bundle)
         listing = handle_text(self.store, "9", "/list", bundle)
-        self.assertIn("4", listing)
-        self.assertIn("10:00", listing)
+        button = listing.buttons["inline_keyboard"][0][0]
+        self.assertIn("Лесі Українки", button["text"])
+        self.assertIn("4", button["text"])
+        opened = handle_callback(self.store, "9", button["callback_data"], bundle)
+        self.assertIn("10:00", opened)
         removed = handle_text(self.store, "9", "/remove", bundle)
         self.assertIn("Прибрав адресу", removed)
         self.assertEqual(self.store.list_for_chat("9"), [])

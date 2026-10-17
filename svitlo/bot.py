@@ -15,7 +15,7 @@ from svitlo.address_input import (
 from svitlo.db import Store
 from svitlo.lookup import groups_for_address
 from svitlo.cards import render_coverage, render_guide, render_schedule
-from svitlo.monitor import main_keyboard, send_telegram, send_telegram_photo
+from svitlo.monitor import address_button, main_keyboard, send_telegram, send_telegram_photo
 from svitlo.report import build_report
 from svitlo.schedule import format_address
 from svitlo.source import ChartBundle, HttpChartClient
@@ -294,6 +294,11 @@ def _without_house_suffix(street: str, house: str) -> str:
 
 
 def handle_callback(store: Store, chat_id: str, data: str, bundle: ChartBundle) -> BotReply:
+    if data.startswith("open:"):
+        address = store.get_address(int(data.split(":", 1)[1]))
+        if address is None or str(address["chat_id"]) != chat_id:
+            return BotReply("Цієї адреси вже немає.")
+        return _one_address(store, address, bundle)
     if data.startswith("edit:"):
         address = store.get_address(int(data.split(":", 1)[1]))
         if address is None or str(address["chat_id"]) != chat_id:
@@ -398,22 +403,53 @@ def _save_and_report(
     if note:
         report = note + "\n\n" + report
     remember_state(store, address_id, bundle)
-    return BotReply(report, render_schedule(report))
+    address = store.get_address(address_id)
+    label = _address_label(store, address) if address else report.split("\n", 1)[0]
+    return BotReply(report, render_schedule(report), address_button(address_id, label))
 
 
 def _address_list(store: Store, chat_id: str, bundle: ChartBundle) -> BotReply:
-    text = _list_text(store, chat_id, bundle)
     rows = store.list_for_chat(chat_id)
-    buttons = None
-    if rows:
-        keyboard = []
-        for index, row in enumerate(rows, start=1):
-            keyboard.append([
-                {"text": f"Змінити {index}", "callback_data": f"edit:{row['id']}"},
-                {"text": f"Видалити {index}", "callback_data": f"del:{row['id']}"},
-            ])
-        buttons = {"inline_keyboard": keyboard}
-    return BotReply(text, render_schedule(text), buttons)
+    if not rows:
+        return BotReply("Збережених адрес ще немає. Натисніть «Додати адресу».", render_guide())
+    keyboard = [
+        [{"text": _address_label(store, row), "callback_data": f"open:{row['id']}"}]
+        for row in rows
+    ]
+    return BotReply("Натисніть адресу:", None, {"inline_keyboard": keyboard})
+
+
+def _one_address(store: Store, address, bundle: ChartBundle) -> BotReply:
+    hit = groups_for_address(store, address["city"], address["street"], address["house"])
+    groups = hit.queues or (
+        [(int(address["queue"]), int(address["subqueue"]))] if int(address["queue"]) > 0 else []
+    )
+    report = build_report(
+        city=address["city"],
+        street=address["street"],
+        house=address["house"],
+        groups=groups,
+        today=None if bundle.error else bundle.today,
+        tomorrow=None if bundle.error else bundle.tomorrow,
+    )
+    label = _place_with_district(store, address)
+    buttons = {
+        "inline_keyboard": [
+            [{"text": _address_label(store, address), "callback_data": f"open:{address['id']}"}],
+            [
+                {"text": "Змінити", "callback_data": f"edit:{address['id']}"},
+                {"text": "Видалити", "callback_data": f"del:{address['id']}"},
+            ],
+        ]
+    }
+    return BotReply(label + "\n\n" + report, render_schedule(report), buttons)
+
+
+def _address_label(store: Store, address) -> str:
+    label = format_address(address["city"], address["street"], 0, 0, address["house"])
+    if len(label) > 60:
+        label = label[:57] + "…"
+    return label
 
 
 def _place_with_district(store: Store, address) -> str:
