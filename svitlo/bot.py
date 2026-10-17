@@ -260,9 +260,10 @@ def _dispatch(store: Store, client: HttpChartClient, token: str, item: dict, bun
         chat_id = (message.get("chat") or {}).get("id")
         if chat_id is None:
             return bundle
-        if bundle is None:
+        data = callback.get("data") or ""
+        if data.startswith("open:") or bundle is None:
             bundle = client.load()
-        reply = handle_callback(store, str(chat_id), callback.get("data") or "", bundle)
+        reply = handle_callback(store, str(chat_id), data, bundle)
         _deliver(token, str(chat_id), reply)
         return bundle
     message = item.get("message") or {}
@@ -416,7 +417,11 @@ def _address_list(store: Store, chat_id: str, bundle: ChartBundle) -> BotReply:
         [{"text": _address_label(store, row), "callback_data": f"open:{row['id']}"}]
         for row in rows
     ]
-    return BotReply("Натисніть адресу:", None, {"inline_keyboard": keyboard})
+    return BotReply(
+        "Натисніть адресу, щоб отримати свіжий графік:",
+        None,
+        {"inline_keyboard": keyboard},
+    )
 
 
 def _one_address(store: Store, address, bundle: ChartBundle) -> BotReply:
@@ -435,14 +440,16 @@ def _one_address(store: Store, address, bundle: ChartBundle) -> BotReply:
     label = _place_with_district(store, address)
     buttons = {
         "inline_keyboard": [
-            [{"text": _address_label(store, address), "callback_data": f"open:{address['id']}"}],
             [
                 {"text": "Змінити", "callback_data": f"edit:{address['id']}"},
                 {"text": "Видалити", "callback_data": f"del:{address['id']}"},
             ],
         ]
     }
-    return BotReply(label + "\n\n" + report, render_schedule(report), buttons)
+    if groups and not bundle.error:
+        remember_state(store, int(address["id"]), bundle)
+    text = "Оновлення\n\n" + label + "\n\n" + report
+    return BotReply(text, render_schedule(report), buttons)
 
 
 def _address_label(store: Store, address) -> str:
