@@ -1,6 +1,8 @@
+import { renderAdmin, renderLocked } from "./admin.js";
+import { districtFor } from "./catalog.js";
 import { ChartDecoder, rangesFor, readPng } from "./decode.js";
 import { formatAddress, formatNotice } from "./match.js";
-import { groupsFor, handleCallback, handleText } from "./talk.js";
+import { groupsFor, handleCallback, handleText, mainKeyboard } from "./talk.js";
 
 const API = "https://api-voe-poweron.inneti.net";
 const CHUNK = 1536;
@@ -62,6 +64,8 @@ export class SvitloBot {
         await this.onUpdate(await request.json());
         return new Response("ok");
       }
+      if (url.pathname === "/admin") return this.adminHttp(request, url);
+      if (url.pathname === "/admin/link") return Response.json({ url: this.adminLink() });
       return new Response("not found", { status: 404 });
     } catch (error) {
       this.metaSet("last_error", String(error?.message || error));
@@ -92,15 +96,81 @@ export class SvitloBot {
       const message = callback.message || {};
       const chatId = message.chat?.id;
       if (chatId == null) return;
-      const result = handleCallback(this, this.schedule(), String(chatId), callback.data || "");
+      const admin = this.isAdmin(chatId);
+      const result = handleCallback(this, this.schedule(), String(chatId), callback.data || "", { admin });
       await this.send(chatId, result);
       return;
     }
     const message = update.message || {};
     const text = message.text || "";
     if (message.chat?.id == null || !text) return;
-    const result = handleText(this, this.schedule(), String(message.chat.id), text);
-    await this.send(message.chat.id, result);
+    const chatId = String(message.chat.id);
+    if (this.isAdminCommand(text)) {
+      await this.send(chatId, this.adminReply(chatId));
+      return;
+    }
+    const result = handleText(this, this.schedule(), chatId, text, { admin: this.isAdmin(chatId) });
+    await this.send(chatId, result);
+  }
+
+  isAdmin(chatId) {
+    return String(chatId) === String(this.env.ADMIN_CHAT_ID || "").trim();
+  }
+
+  isAdminCommand(text) {
+    const cleaned = String(text || "").trim();
+    const command = cleaned.startsWith("/") ? cleaned.split(/\s+/)[0].toLowerCase().split("@")[0] : "";
+    return command === "/admin" || cleaned.toLowerCase() === "адмін-панель";
+  }
+
+  adminReply(chatId) {
+    if (!this.isAdmin(chatId)) {
+      return { text: "Панель адміністратора відкривається лише власнику бота.", markup: mainKeyboard(false) };
+    }
+    return {
+      text: `Ви адміністратор.\n\nВідкрийте панель: там видно, скільки людей користується ботом і які міста, села та вулиці вони додали.\n${this.adminLink()}`,
+      markup: mainKeyboard(true),
+    };
+  }
+
+  adminLink() {
+    const base = String(this.env.PUBLIC_URL || "https://pavlo-telegram-bot.pmodsp.workers.dev").replace(/\/$/, "");
+    return `${base}/admin/enter/${this.ensureAdminToken()}`;
+  }
+
+  ensureAdminToken() {
+    const current = this.metaGet("admin_token");
+    const until = Number(this.metaGet("admin_token_until") || 0);
+    if (current && until > Date.now()) return current;
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const token = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    this.metaSet("admin_token", token);
+    this.metaSet("admin_token_until", String(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    return token;
+  }
+
+  adminHttp(request, url) {
+    const expected = this.metaGet("admin_token");
+    const until = Number(this.metaGet("admin_token_until") || 0);
+    const valid = Boolean(expected) && until > Date.now();
+    const key = request.headers.get("X-Admin-Key") || url.searchParams.get("k") || "";
+    const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" };
+    if (key && valid && key === expected) {
+      headers["Set-Cookie"] = `svitlo_admin=${encodeURIComponent(key)}; HttpOnly; Secure; SameSite=Lax; Path=/admin; Max-Age=2592000`;
+      return new Response(this.adminHtml(), { headers });
+    }
+    const cookie = readCookie(request, "svitlo_admin");
+    if (valid && cookie === expected) return new Response(this.adminHtml(), { headers });
+    return new Response(renderLocked(), { status: 401, headers });
+  }
+
+  adminHtml() {
+    return renderAdmin({
+      rows: this.listAddresses(),
+      districtOf: districtFor,
+      lastCheck: this.metaGet("last_check"),
+    });
   }
 
   async send(chatId, result) {
@@ -515,6 +585,15 @@ function addDays(iso, days) {
 function labelFromIso(iso) {
   const [year, month, day] = iso.split("-");
   return `${day}.${month}.${year}`;
+}
+
+function readCookie(request, name) {
+  const header = request.headers.get("Cookie") || "";
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return "";
 }
 
 function clip(value) {

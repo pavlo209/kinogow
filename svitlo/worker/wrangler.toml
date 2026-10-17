@@ -22,3 +22,7 @@ run_worker_first = true
 
 [observability]
 enabled = true
+
+[vars]
+ADMIN_CHAT_ID = "505113365"
+PUBLIC_URL = "https://pavlo-telegram-bot.pmodsp.workers.dev"

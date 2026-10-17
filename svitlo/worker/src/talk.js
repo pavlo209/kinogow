@@ -35,44 +35,43 @@ export const HELP = [
   "Команди: /list — збережені адреси, /remove — прибрати останню.",
 ].join("\n");
 
-export function mainKeyboard() {
-  return {
-    keyboard: [
-      [{ text: "Додати адресу" }, { text: "Мої адреси" }],
-      [{ text: "Де працює" }, { text: "Як користуватись" }],
-      [{ text: "Сайт стеження" }],
-    ],
-    resize_keyboard: true,
-    is_persistent: true,
-  };
+export function mainKeyboard(admin = false) {
+  const keyboard = [
+    [{ text: "Додати адресу" }, { text: "Мої адреси" }],
+    [{ text: "Де працює" }, { text: "Як користуватись" }],
+    [{ text: "Сайт стеження" }],
+  ];
+  if (admin) keyboard.push([{ text: "Адмін-панель" }]);
+  return { keyboard, resize_keyboard: true, is_persistent: true };
 }
 
-export function handleText(db, schedule, chatId, text) {
+export function handleText(db, schedule, chatId, text, options = {}) {
+  const admin = Boolean(options.admin);
   const cleaned = String(text ?? "").trim();
   const action = BUTTONS.get(cleaned.toLowerCase());
   const command = cleaned.startsWith("/") ? cleaned.split(/\s+/)[0].toLowerCase().split("@")[0] : "";
   if (action === "help" || command === "/start" || command === "/help") {
     db.clearDialog(chatId);
     db.setDialog(chatId, "city");
-    return reply(HELP);
+    return reply(HELP, admin);
   }
   if (action === "add") {
     db.setDialog(chatId, "city");
-    return reply("Крок 1. Надішліть населений пункт, без слова «місто» чи «село».");
+    return reply("Крок 1. Надішліть населений пункт, без слова «місто» чи «село».", admin);
   }
-  if (action === "where") return reply(coverageText());
+  if (action === "where") return reply(coverageText(), admin);
   if (action === "site") {
-    return reply(`Офіційний графік Волиньобленерго:\n${SITE}\n\nЦей бот перевіряє збережені адреси кожні 5 хвилин і пише, коли години змінились.`);
+    return reply(`Офіційний графік Волиньобленерго:\n${SITE}\n\nЦей бот перевіряє збережені адреси кожні 5 хвилин і пише, коли години змінились.`, admin);
   }
   if (command === "/cancel") {
     db.clearDialog(chatId);
-    return reply("Гаразд, адресу не записую. Натисніть «Додати адресу», коли будете готові.");
+    return reply("Гаразд, адресу не записую. Натисніть «Додати адресу», коли будете готові.", admin);
   }
-  if (action === "list" || command === "/list") return addressList(db, chatId);
+  if (action === "list" || command === "/list") return addressList(db, chatId, admin);
   if (command === "/remove") {
     const removed = db.deleteLastForChat(chatId);
-    if (!removed) return reply("Збережених адрес ще немає.");
-    return reply(`Прибрав адресу ${formatAddress(removed.city, removed.street, 0, 0, removed.house)}.`);
+    if (!removed) return reply("Збережених адрес ще немає.", admin);
+    return reply(`Прибрав адресу ${formatAddress(removed.city, removed.street, 0, 0, removed.house)}.`, admin);
   }
 
   const parsed = parseAddressMessage(cleaned) || parseLooseAddress(cleaned, places().map((item) => item[0]));
@@ -80,43 +79,44 @@ export function handleText(db, schedule, chatId, text) {
     const editing = db.getDialog(chatId);
     const targetId = editing && editing.step === "edit" ? Number(editing.target_id) : 0;
     db.clearDialog(chatId);
-    return saveAndReport(db, schedule, chatId, parsed.city, withoutHouseSuffix(parsed.street, parsed.house), parsed.house, targetId);
+    return saveAndReport(db, schedule, chatId, parsed.city, withoutHouseSuffix(parsed.street, parsed.house), parsed.house, targetId, admin);
   }
 
   const dialog = db.getDialog(chatId);
   const step = dialog ? dialog.step : "city";
   const line = cleanLine(cleaned);
-  if (!line || line.startsWith("/")) return reply(HELP);
+  if (!line || line.startsWith("/")) return reply(HELP, admin);
   if (step === "street" && dialog) {
     db.setDialog(chatId, "house", dialog.city, line);
-    return reply(`Крок 3. Вулиця: ${line}. Надішліть номер будинку, наприклад 15 або 44а.`);
+    return reply(`Крок 3. Вулиця: ${line}. Надішліть номер будинку, наприклад 15 або 44а.`, admin);
   }
   if (step === "house" && dialog) {
     if (!looksLikeHouse(line)) {
-      return reply(`«${line}» не схоже на номер будинку. Напишіть лише номер, за потреби з літерою разом: 15 або 44а. Без слова «буд.» і без зайвих пробілів.`);
+      return reply(`«${line}» не схоже на номер будинку. Напишіть лише номер, за потреби з літерою разом: 15 або 44а. Без слова «буд.» і без зайвих пробілів.`, admin);
     }
     db.clearDialog(chatId);
-    return saveAndReport(db, schedule, chatId, dialog.city, withoutHouseSuffix(dialog.street, line), line, 0);
+    return saveAndReport(db, schedule, chatId, dialog.city, withoutHouseSuffix(dialog.street, line), line, 0, admin);
   }
   db.setDialog(chatId, "street", line, "");
-  return reply(`Крок 2. Населений пункт: ${line}. Надішліть вулицю без «вул.».`);
+  return reply(`Крок 2. Населений пункт: ${line}. Надішліть вулицю без «вул.».`, admin);
 }
 
-export function handleCallback(db, schedule, chatId, data) {
+export function handleCallback(db, schedule, chatId, data, options = {}) {
+  const admin = Boolean(options.admin);
   if (data.startsWith("open:")) {
     const address = db.getAddress(Number(data.slice(5)));
-    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.");
+    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.", admin);
     return oneAddress(db, schedule, address);
   }
   if (data.startsWith("edit:")) {
     const address = db.getAddress(Number(data.slice(5)));
-    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.");
+    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.", admin);
     db.setDialog(chatId, "edit", "", "", Number(address.id));
-    return reply(`Надішліть нову адресу замість ${placeWithDistrict(address)}.\nТрьома рядками: населений пункт, вулиця, будинок. Або через кому.`);
+    return reply(`Надішліть нову адресу замість ${placeWithDistrict(address)}.\nТрьома рядками: населений пункт, вулиця, будинок. Або через кому.`, admin);
   }
   if (data.startsWith("del:")) {
     const address = db.getAddress(Number(data.slice(4)));
-    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.");
+    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.", admin);
     return {
       text: `Видалити ${placeWithDistrict(address)}?`,
       markup: {
@@ -130,25 +130,25 @@ export function handleCallback(db, schedule, chatId, data) {
   if (data.startsWith("delyes:")) {
     const addressId = Number(data.slice(7));
     const address = db.getAddress(addressId);
-    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.");
+    if (!address || String(address.chat_id) !== String(chatId)) return reply("Цієї адреси вже немає.", admin);
     const place = placeWithDistrict(address);
     db.deleteAddress(addressId);
-    return reply(`Видалив ${place}.`);
+    return reply(`Видалив ${place}.`, admin);
   }
-  if (data === "delno") return addressList(db, chatId);
-  return reply("Не зрозумів цю кнопку. Відкрийте «Мої адреси» ще раз.");
+  if (data === "delno") return addressList(db, chatId, admin);
+  return reply("Не зрозумів цю кнопку. Відкрийте «Мої адреси» ще раз.", admin);
 }
 
 export function groupsFor(city, street, house) {
   return matchStreet(rowsFor(city, street), house);
 }
 
-function saveAndReport(db, schedule, chatId, city, street, house, targetId) {
+function saveAndReport(db, schedule, chatId, city, street, house, targetId, admin = false) {
   const corrected = correctPlace(city, street, places(), (name) => streets(name));
   if (corrected.blocked) {
     let text = corrected.note;
     if (text.includes("немає")) text = `Вашої адреси немає в графіках відключень.\n\n${text}`;
-    return reply(text);
+    return reply(text, admin);
   }
   city = corrected.city;
   street = corrected.street;
@@ -162,7 +162,7 @@ function saveAndReport(db, schedule, chatId, city, street, house, targetId) {
   }
   if (!groups.length && hit.streetKnown) {
     const text = `Вашої адреси немає в графіках відключень.\n\nПеревірив ${placeLabel(city, districtFor(city))}, вулицю «${street}», будинок ${house}.`;
-    return reply(text);
+    return reply(text, admin);
   }
   let report = buildReport({ city, street, house, groups, today: schedule.today, tomorrow: schedule.tomorrow });
   if (corrected.note) report = `${corrected.note}\n\n${report}`;
@@ -198,9 +198,9 @@ function oneAddress(db, schedule, address) {
   };
 }
 
-function addressList(db, chatId) {
+function addressList(db, chatId, admin = false) {
   const rows = db.listForChat(chatId);
-  if (!rows.length) return reply("Збережених адрес ще немає. Натисніть «Додати адресу».");
+  if (!rows.length) return reply("Збережених адрес ще немає. Натисніть «Додати адресу».", admin);
   return {
     text: "Натисніть адресу, щоб отримати свіжий графік:",
     markup: {
@@ -239,6 +239,6 @@ function withoutHouseSuffix(street, house) {
   return street;
 }
 
-function reply(text) {
-  return { text, markup: mainKeyboard() };
+function reply(text, admin = false) {
+  return { text, markup: mainKeyboard(Boolean(admin)) };
 }

@@ -16,7 +16,7 @@ export default {
         headers: { "Content-Type": "application/json" },
       });
     }
-    if ((url.pathname === "/import" || url.pathname === "/tick") && request.method === "POST") {
+    if ((url.pathname === "/import" || url.pathname === "/tick" || url.pathname === "/admin/link") && request.method === "POST") {
       const provided = (request.headers.get("X-Import-Secret") || "").trim();
       if (!env.IMPORT_SECRET || provided !== String(env.IMPORT_SECRET).trim()) {
         return new Response("forbidden", { status: 403 });
@@ -28,6 +28,16 @@ export default {
       });
     }
     if (url.pathname === "/health") return stub(env).fetch("https://bot.internal/health");
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/enter/")) {
+      const headers = new Headers();
+      const cookie = request.headers.get("Cookie");
+      if (cookie) headers.set("Cookie", cookie);
+      const key = url.pathname.startsWith("/admin/enter/")
+        ? decodeURIComponent(url.pathname.slice("/admin/enter/".length))
+        : (url.searchParams.get("k") || "");
+      if (key) headers.set("X-Admin-Key", key);
+      return stub(env).fetch("https://bot.internal/admin", { headers });
+    }
     if (env.ASSETS) return env.ASSETS.fetch(request);
     return new Response("Графік світла. Бот: https://t.me/volunsvitlo_bot", {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
