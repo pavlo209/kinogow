@@ -6,7 +6,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/telegram" && request.method === "POST") {
-      if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) {
+      const provided = (request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "").trim();
+      if (!env.WEBHOOK_SECRET || provided !== String(env.WEBHOOK_SECRET).trim()) {
         return new Response("forbidden", { status: 403 });
       }
       return stub(env).fetch("https://bot.internal/telegram", {
@@ -16,7 +17,8 @@ export default {
       });
     }
     if ((url.pathname === "/import" || url.pathname === "/tick") && request.method === "POST") {
-      if (request.headers.get("Authorization") !== `Bearer ${env.IMPORT_SECRET}`) {
+      const provided = (request.headers.get("X-Import-Secret") || "").trim();
+      if (!env.IMPORT_SECRET || provided !== String(env.IMPORT_SECRET).trim()) {
         return new Response("forbidden", { status: 403 });
       }
       return stub(env).fetch(`https://bot.internal${url.pathname}`, {

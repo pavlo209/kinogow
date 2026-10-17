@@ -104,11 +104,12 @@ export class SvitloBot {
   }
 
   async send(chatId, result) {
-    await telegram(this.env, "sendMessage", {
+    const sent = await telegram(this.env, "sendMessage", {
       chat_id: chatId,
       text: String(result.text || "").slice(0, 4000),
       reply_markup: result.markup,
     });
+    if (!sent.ok) throw new Error(sent.description || "Повідомлення в Telegram не пішло");
   }
 
   async tick() {
