@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from svitlo.address_input import parse_address_message
-from svitlo.bot import handle_text
+from svitlo.bot import handle_callback, handle_text
 from svitlo.db import Store
 from svitlo.lookup import house_in_spec, parse_queue_html, select_queues
 from svitlo.report import build_report
@@ -100,10 +100,33 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("черга 1.1", reply)
         self.assertIn("10:00 до 14:00", reply)
 
+    def test_extra_spaces_point_to_strumivka_in_lutsk_district(self) -> None:
+        self.store.import_queue_rows([
+            ("Струмівка", "Рівненська", "126, 128", 6, 2, True, "", "Луцький"),
+        ])
+        reply = handle_text(self.store, "9", "Струм  івка\nРівненська\n126", _bundle())
+        self.assertIn("Луцький район", reply)
+        self.assertIn("черга 6.2", reply)
+        self.assertIn("зайві пробіли", reply)
+
+    def test_edit_replaces_the_chosen_address(self) -> None:
+        self.store.import_queue_rows([
+            ("Луцьк", "Волі", "44а", 2, 2, True, "", "Луцький"),
+            ("Баїв", "Набережна", "21", 1, 2, True, "", "Луцький"),
+        ])
+        address_id = self.store.save_place("Луцьк", "Волі", "44а", "9")
+        handle_callback(self.store, "9", f"edit:{address_id}", _bundle())
+        reply = handle_text(self.store, "9", "Баїв, Набережна, 21", _bundle())
+        self.assertIn("Баїв", reply)
+        updated = self.store.get_address(address_id)
+        self.assertEqual(updated["city"], "Баїв")
+        self.assertEqual(updated["house"], "21")
+
     def test_missing_house_is_reported_only_after_the_street_is_known(self) -> None:
         self.store.import_queue_rows([("Луцьк", "Волі", "10, 12", 2, 2, True, "")])
         reply = handle_text(self.store, "9", "Луцьк\nВолі\n99", _bundle())
-        self.assertEqual(reply, "Вашої адреси немає в графіках відключень.")
+        self.assertIn("Вашої адреси немає в графіках відключень.", reply)
+        self.assertIn("Волі", reply)
 
     def test_list_and_remove(self) -> None:
         bundle = _bundle()

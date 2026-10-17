@@ -21,6 +21,7 @@ class QueueRow:
     subqueue: int
     enrolled: bool
     gav: str
+    district: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,11 @@ def parse_queue_tsv(text: str) -> list[QueueRow]:
         cells = [part.strip() for part in line.split("\t")]
         if len(cells) < 6:
             continue
-        _district, city, street, houses, gpv, gav = cells[:6]
+        district, city, street, houses, gpv, gav = cells[:6]
         if city in {"", "Нас. пункт"} or street in {"", "Вулиця"}:
             continue
         queue, subqueue, enrolled = _parse_gpv(gpv)
-        row = QueueRow(city, street, houses, queue, subqueue, enrolled, gav)
+        row = QueueRow(city, street, houses, queue, subqueue, enrolled, gav, district)
         key = (city.casefold(), street.casefold(), houses, queue, subqueue, gav)
         if key in seen:
             continue
@@ -63,11 +64,11 @@ def parse_queue_table(html: str) -> list[QueueRow]:
         ]
         if len(cells) < 6:
             continue
-        _district, city, street, houses, gpv, gav = cells[:6]
+        district, city, street, houses, gpv, gav = cells[:6]
         if city in {"", "Нас. пункт"} or street in {"", "Вулиця"}:
             continue
         queue, subqueue, enrolled = _parse_gpv(gpv)
-        row = QueueRow(city, street, houses, queue, subqueue, enrolled, gav)
+        row = QueueRow(city, street, houses, queue, subqueue, enrolled, gav, district)
         key = (city.casefold(), street.casefold(), houses, queue, subqueue, gav)
         if key in seen:
             continue
@@ -94,7 +95,16 @@ def match_catalog(rows: list, city: str, street: str, house: str) -> CatalogMatc
 
 def rows_as_tuples(rows: list[QueueRow]) -> list[tuple]:
     return [
-        (row.city, row.street, row.houses, row.queue, row.subqueue, row.enrolled, row.gav)
+        (
+            row.city,
+            row.street,
+            row.houses,
+            row.queue,
+            row.subqueue,
+            row.enrolled,
+            row.gav,
+            row.district,
+        )
         for row in rows
     ]
 
@@ -112,6 +122,7 @@ def load_bundled_catalog(store) -> int:
             int(item["subqueue"]),
             bool(item["enrolled"]),
             item.get("gav", ""),
+            item.get("district", ""),
         )
         for item in payload
     ]
@@ -128,6 +139,7 @@ def dump_catalog(path: Path, rows: list[QueueRow]) -> None:
             "subqueue": row.subqueue,
             "enrolled": row.enrolled,
             "gav": row.gav,
+            "district": row.district,
         }
         for row in rows
     ]

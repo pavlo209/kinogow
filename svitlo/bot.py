@@ -29,9 +29,15 @@ BUTTONS = {
 
 
 class BotReply:
-    def __init__(self, text: str, image: bytes | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        image: bytes | None = None,
+        buttons: dict | None = None,
+    ) -> None:
         self.text = text
         self.image = image
+        self.buttons = buttons
 
     def __contains__(self, item: object) -> bool:
         return item in self.text
@@ -78,7 +84,7 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> B
         store.clear_dialog(chat_id)
         return BotReply("Гаразд, адресу не записую. Натисніть «Додати адресу», коли будете готові.")
     if action == "list" or command == "/list":
-        return BotReply(_list_text(store, chat_id, bundle), render_schedule(_list_text(store, chat_id, bundle)))
+        return _address_list(store, chat_id, bundle)
     if command == "/remove":
         removed = store.delete_last_for_chat(chat_id)
         if removed is None:
@@ -88,9 +94,19 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> B
 
     parsed = parse_address_message(text)
     if parsed:
+        editing = store.get_dialog(chat_id)
+        target_id = int(editing["target_id"]) if editing and editing["step"] == "edit" else 0
         store.clear_dialog(chat_id)
         city, street, house = parsed
-        return _save_and_report(store, chat_id, city, _without_house_suffix(street, house), house, bundle)
+        return _save_and_report(
+            store,
+            chat_id,
+            city,
+            _without_house_suffix(street, house),
+            house,
+            bundle,
+            target_id,
+        )
 
     dialog = store.get_dialog(chat_id)
     step = dialog["step"] if dialog else "city"
@@ -102,7 +118,11 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> B
         return BotReply(f"Крок 3. Вулиця: {line}. Надішліть номер будинку, наприклад 15 або 44а.")
     if step == "house" and dialog is not None:
         if not looks_like_house(line):
-            return "Потрібен номер будинку, наприклад 15 або 15а."
+            return BotReply(
+                f"«{line}» не схоже на номер будинку. "
+                "Напишіть лише номер, за потреби з літерою разом: 15 або 44а. "
+                "Без слова «буд.» і без зайвих пробілів."
+            )
         store.clear_dialog(chat_id)
         street = _without_house_suffix(dialog["street"], line)
         return _save_and_report(store, chat_id, dialog["city"], street, line, bundle)
@@ -143,7 +163,7 @@ def poll_once(store: Store, client: HttpChartClient) -> None:
     if not token:
         return
     offset = store.get_setting("telegram_offset")
-    payload: dict = {"timeout": 0, "allowed_updates": ["message"]}
+    payload: dict = {"timeout": 0, "allowed_updates": ["message", "callback_query"]}
     if offset:
         payload["offset"] = int(offset)
     try:
@@ -155,15 +175,7 @@ def poll_once(store: Store, client: HttpChartClient) -> None:
     bundle = None
     for item in updates.get("result") or []:
         store.set_setting("telegram_offset", str(int(item["update_id"]) + 1))
-        message = item.get("message") or {}
-        chat = message.get("chat") or {}
-        text = message.get("text") or ""
-        if chat.get("id") is None or not text:
-            continue
-        if bundle is None:
-            bundle = client.load()
-        reply = handle_text(store, str(chat["id"]), text, bundle)
-        _deliver(token, str(chat["id"]), reply)
+        bundle = _dispatch(store, client, token, item, bundle)
 
 
 def run_bot(store: Store, client: HttpChartClient, stop) -> None:
@@ -172,7 +184,7 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
         return
     while not stop.is_set():
         offset = store.get_setting("telegram_offset")
-        payload: dict = {"timeout": 25, "allowed_updates": ["message"]}
+        payload: dict = {"timeout": 25, "allowed_updates": ["message", "callback_query"]}
         if offset:
             payload["offset"] = int(offset)
         try:
@@ -187,24 +199,27 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
         bundle = client.load() if batch else None
         for item in batch:
             store.set_setting("telegram_offset", str(int(item["update_id"]) + 1))
-            message = item.get("message") or {}
-            chat = message.get("chat") or {}
-            text = message.get("text") or ""
-            if chat.get("id") is None or not text or bundle is None:
-                continue
             try:
-                reply = handle_text(store, str(chat["id"]), text, bundle)
+                bundle = _dispatch(store, client, token, item, bundle)
             except Exception:
-                reply = BotReply("Не вдалося зібрати графік. Надішліть адресу ще раз трохи згодом.")
-            _deliver(token, str(chat["id"]), reply)
+                callback = item.get("callback_query") or {}
+                message = callback.get("message") or item.get("message") or {}
+                chat = (message.get("chat") or {}).get("id")
+                if chat is not None:
+                    _deliver(
+                        token,
+                        str(chat),
+                        BotReply("Не вдалося зібрати графік. Надішліть адресу ще раз трохи згодом."),
+                    )
 
 
 def _deliver(token: str, chat_id: str, reply: BotReply) -> str:
+    markup = reply.buttons or main_keyboard()
     if reply.image:
-        status = send_telegram_photo(token, chat_id, reply.image, reply.text, main_keyboard())
+        status = send_telegram_photo(token, chat_id, reply.image, reply.text, markup)
         if status and not status.startswith("не"):
             return status
-    return send_telegram(token, chat_id, reply.text, main_keyboard())
+    return send_telegram(token, chat_id, reply.text, markup)
 
 
 def _cities(store: Store) -> list[str]:
@@ -227,6 +242,34 @@ def _coverage_text(store: Store) -> str:
     )
 
 
+def _dispatch(store: Store, client: HttpChartClient, token: str, item: dict, bundle: ChartBundle | None):
+    callback = item.get("callback_query") or {}
+    if callback:
+        try:
+            _api(token, "answerCallbackQuery", {"callback_query_id": callback["id"]}, 10)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            pass
+        message = callback.get("message") or {}
+        chat_id = (message.get("chat") or {}).get("id")
+        if chat_id is None:
+            return bundle
+        if bundle is None:
+            bundle = client.load()
+        reply = handle_callback(store, str(chat_id), callback.get("data") or "", bundle)
+        _deliver(token, str(chat_id), reply)
+        return bundle
+    message = item.get("message") or {}
+    chat = message.get("chat") or {}
+    text = message.get("text") or ""
+    if chat.get("id") is None or not text:
+        return bundle
+    if bundle is None:
+        bundle = client.load()
+    reply = handle_text(store, str(chat["id"]), text, bundle)
+    _deliver(token, str(chat["id"]), reply)
+    return bundle
+
+
 def _search_site(store: Store, city: str, street: str) -> bool:
     """Шукає адресу на сайті. True, якщо перевірка відбулася, навіть коли рядків немає."""
     try:
@@ -243,6 +286,44 @@ def _without_house_suffix(street: str, house: str) -> str:
     return street
 
 
+def handle_callback(store: Store, chat_id: str, data: str, bundle: ChartBundle) -> BotReply:
+    if data.startswith("edit:"):
+        address = store.get_address(int(data.split(":", 1)[1]))
+        if address is None or str(address["chat_id"]) != chat_id:
+            return BotReply("Цієї адреси вже немає.")
+        store.set_dialog(chat_id, "edit", target_id=int(address["id"]))
+        place = _place_with_district(store, address)
+        return BotReply(
+            f"Надішліть нову адресу замість {place}.\n"
+            "Трьома рядками: населений пункт, вулиця, будинок. Або через кому."
+        )
+    if data.startswith("del:"):
+        address = store.get_address(int(data.split(":", 1)[1]))
+        if address is None or str(address["chat_id"]) != chat_id:
+            return BotReply("Цієї адреси вже немає.")
+        place = _place_with_district(store, address)
+        return BotReply(
+            f"Видалити {place}?",
+            buttons={
+                "inline_keyboard": [[
+                    {"text": "Так, видалити", "callback_data": f"delyes:{address['id']}"},
+                    {"text": "Ні", "callback_data": "delno"},
+                ]]
+            },
+        )
+    if data.startswith("delyes:"):
+        address_id = int(data.split(":", 1)[1])
+        address = store.get_address(address_id)
+        if address is None or str(address["chat_id"]) != chat_id:
+            return BotReply("Цієї адреси вже немає.")
+        place = _place_with_district(store, address)
+        store.delete_address(address_id)
+        return BotReply(f"Видалив {place}.")
+    if data == "delno":
+        return _address_list(store, chat_id, bundle)
+    return BotReply("Не зрозумів цю кнопку. Відкрийте «Мої адреси» ще раз.")
+
+
 def _save_and_report(
     store: Store,
     chat_id: str,
@@ -250,8 +331,21 @@ def _save_and_report(
     street: str,
     house: str,
     bundle: ChartBundle,
-) -> str:
-    address_id = store.save_place(city, street, house, chat_id)
+    target_id: int = 0,
+) -> BotReply:
+    from svitlo.hints import correct_place
+
+    city, street, note, blocked = correct_place(store, city, street)
+    if blocked:
+        text = note
+        if "немає" in note:
+            text = "Вашої адреси немає в графіках відключень.\n\n" + note
+        return BotReply(text, render_schedule(text))
+    if target_id:
+        store.update_address(target_id, city, street, house)
+        address_id = target_id
+    else:
+        address_id = store.save_place(city, street, house, chat_id)
     hit = groups_for_address(store, city, street, house)
     checked = hit.street_known
     if not hit.queues and not hit.street_known:
@@ -277,8 +371,14 @@ def _save_and_report(
         if bundle.error:
             report = f"{report}\n\n{bundle.error}"
     elif checked:
-        report = "Вашої адреси немає в графіках відключень."
-        return BotReply(report, render_schedule(f"{city}, {street}, {house}\n{report}"))
+        district = store.district_for_city(city)
+        from svitlo.hints import place_label
+
+        report = (
+            "Вашої адреси немає в графіках відключень.\n\n"
+            f"Перевірив {place_label(city, district)}, вулицю «{street}», будинок {house}."
+        )
+        return BotReply(report, render_schedule(report))
     else:
         report = build_report(
             city=city,
@@ -288,8 +388,36 @@ def _save_and_report(
             today=None,
             tomorrow=None,
         )
+    if note:
+        report = note + "\n\n" + report
     remember_state(store, address_id, bundle)
     return BotReply(report, render_schedule(report))
+
+
+def _address_list(store: Store, chat_id: str, bundle: ChartBundle) -> BotReply:
+    text = _list_text(store, chat_id, bundle)
+    rows = store.list_for_chat(chat_id)
+    buttons = None
+    if rows:
+        keyboard = []
+        for index, row in enumerate(rows, start=1):
+            keyboard.append([
+                {"text": f"Змінити {index}", "callback_data": f"edit:{row['id']}"},
+                {"text": f"Видалити {index}", "callback_data": f"del:{row['id']}"},
+            ])
+        buttons = {"inline_keyboard": keyboard}
+    return BotReply(text, render_schedule(text), buttons)
+
+
+def _place_with_district(store: Store, address) -> str:
+    from svitlo.hints import place_label
+
+    place = format_address(address["city"], address["street"], 0, 0, address["house"])
+    district = store.district_for_city(address["city"])
+    label = place_label(address["city"], district)
+    if district and address["city"] in place:
+        place = place.replace(address["city"], label, 1)
+    return place
 
 
 def _list_text(store: Store, chat_id: str, bundle: ChartBundle) -> str:
@@ -297,13 +425,16 @@ def _list_text(store: Store, chat_id: str, bundle: ChartBundle) -> str:
     if not rows:
         return "Збережених адрес ще немає. " + HELP
     parts = []
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         hit = groups_for_address(store, row["city"], row["street"], row["house"])
         groups = hit.queues or (
             [(int(row["queue"]), int(row["subqueue"]))] if int(row["queue"]) > 0 else []
         )
         parts.append(
-            build_report(
+            f"{index}. "
+            + _place_with_district(store, row)
+            + "\n"
+            + build_report(
                 city=row["city"],
                 street=row["street"],
                 house=row["house"],

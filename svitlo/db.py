@@ -39,7 +39,8 @@ class Store:
                     chat_id TEXT PRIMARY KEY,
                     step TEXT NOT NULL,
                     city TEXT NOT NULL DEFAULT '',
-                    street TEXT NOT NULL DEFAULT ''
+                    street TEXT NOT NULL DEFAULT '',
+                    target_id INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS states (
                     address_id INTEGER NOT NULL,
@@ -84,6 +85,12 @@ class Store:
             conn.execute("ALTER TABLE addresses ADD COLUMN house TEXT NOT NULL DEFAULT ''")
         if "chat_id" not in columns:
             conn.execute("ALTER TABLE addresses ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''")
+        catalog_columns = {row[1] for row in conn.execute("PRAGMA table_info(queue_catalog)")}
+        if catalog_columns and "district" not in catalog_columns:
+            conn.execute("ALTER TABLE queue_catalog ADD COLUMN district TEXT NOT NULL DEFAULT ''")
+        dialog_columns = {row[1] for row in conn.execute("PRAGMA table_info(dialogs)")}
+        if dialog_columns and "target_id" not in dialog_columns:
+            conn.execute("ALTER TABLE dialogs ADD COLUMN target_id INTEGER NOT NULL DEFAULT 0")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
@@ -199,26 +206,59 @@ class Store:
         with self._lock, self._connect() as conn:
             return conn.execute("SELECT * FROM dialogs WHERE chat_id = ?", (chat_id,)).fetchone()
 
-    def set_dialog(self, chat_id: str, step: str, city: str = "", street: str = "") -> None:
+    def set_dialog(
+        self,
+        chat_id: str,
+        step: str,
+        city: str = "",
+        street: str = "",
+        target_id: int = 0,
+    ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO dialogs (chat_id, step, city, street) VALUES (?, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET step = excluded.step, city = excluded.city, street = excluded.street
+                INSERT INTO dialogs (chat_id, step, city, street, target_id) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    step = excluded.step,
+                    city = excluded.city,
+                    street = excluded.street,
+                    target_id = excluded.target_id
                 """,
-                (chat_id, step, city, street),
+                (chat_id, step, city, street, target_id),
             )
 
+    def update_address(self, address_id: int, city: str, street: str, house: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE addresses
+                SET city = ?, street = ?, house = ?, queue = 0, subqueue = 0
+                WHERE id = ?
+                """,
+                (city, street, house, address_id),
+            )
+            conn.execute("DELETE FROM states WHERE address_id = ?", (address_id,))
+
     def import_queue_rows(self, rows: list[tuple]) -> int:
-        """rows: city, street, houses, queue, subqueue, enrolled, gav."""
+        """rows: city, street, houses, queue, subqueue, enrolled, gav, and optionally district."""
         added = 0
         with self._lock, self._connect() as conn:
-            for city, street, houses, queue, subqueue, enrolled, gav in rows:
+            for row in rows:
+                district = ""
+                if len(row) >= 8:
+                    city, street, houses, queue, subqueue, enrolled, gav, district = row[:8]
+                else:
+                    city, street, houses, queue, subqueue, enrolled, gav = row[:7]
                 cursor = conn.execute(
                     """
-                    INSERT OR IGNORE INTO queue_catalog (
-                        city_key, street_key, city, street, houses, queue, subqueue, enrolled, gav
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO queue_catalog (
+                        city_key, street_key, city, street, houses, queue, subqueue, enrolled, gav, district
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(city_key, street_key, houses, queue, subqueue, gav) DO UPDATE SET
+                        district = CASE
+                            WHEN excluded.district != '' THEN excluded.district
+                            ELSE queue_catalog.district
+                        END
                     """,
                     (
                         _name_key(city),
@@ -230,10 +270,35 @@ class Store:
                         subqueue,
                         1 if enrolled else 0,
                         gav,
+                        district,
                     ),
                 )
                 added += cursor.rowcount
         return added
+
+    def district_for_city(self, city: str) -> str:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT district FROM queue_catalog
+                WHERE city_key = ? AND district != ''
+                LIMIT 1
+                """,
+                (_name_key(city),),
+            ).fetchone()
+        return "" if row is None else str(row["district"])
+
+    def places(self) -> list[tuple[str, str]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT city, MAX(district) AS district
+                FROM queue_catalog
+                GROUP BY city_key
+                ORDER BY city
+                """
+            ).fetchall()
+        return [(str(row["city"]), str(row["district"] or "")) for row in rows]
 
     def catalog_cities(self) -> list[str]:
         with self._lock, self._connect() as conn:
@@ -248,6 +313,13 @@ class Store:
             except sqlite3.OperationalError:
                 return []
         return [str(row["city"]) for row in rows]
+
+    def catalog_for_city(self, city: str) -> list[sqlite3.Row]:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT street, district FROM queue_catalog WHERE city_key = ?",
+                (_name_key(city),),
+            ).fetchall()
 
     def catalog_for_street(self, city: str, street: str) -> list[sqlite3.Row]:
         with self._lock, self._connect() as conn:
