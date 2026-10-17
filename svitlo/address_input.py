@@ -16,6 +16,40 @@ _HOUSE_PREFIX = re.compile(r"^(?:будинок|буд)\.?\s+", re.IGNORECASE)
 _HOUSE = re.compile(r"^\d+[a-zа-яіїєґ]?(?:[/-]\d+[a-zа-яіїєґ]?)?$", re.IGNORECASE)
 
 
+def parse_loose_address(text: str, cities: list[str] | None = None) -> tuple[str, str, str] | None:
+    """Розбирає «Луцьк Волі 44 а» і «Новий Загорів, Шевченка 10»."""
+    raw = clean_place_line(text.strip(" ,"))
+    if not raw or raw.startswith("/"):
+        return None
+    match = re.search(r"(\d+)\s*([a-zа-яіїєґ]?)\s*$", raw, re.IGNORECASE)
+    if not match:
+        return None
+    house = match.group(1) + (match.group(2) or "")
+    if not looks_like_house(house):
+        return None
+    head = raw[: match.start()].strip(" ,")
+    if not head:
+        return None
+    city = ""
+    street = ""
+    if cities:
+        for candidate in sorted(cities, key=len, reverse=True):
+            if head.casefold().startswith(candidate.casefold()):
+                city = candidate
+                street = head[len(candidate) :].strip(" ,")
+                break
+    if not city:
+        parts = head.split()
+        if len(parts) < 2:
+            return None
+        city, street = parts[0], " ".join(parts[1:])
+    street = _clean_street(street)
+    city = _clean_city(city)
+    if len(city) < 2 or len(street) < 2:
+        return None
+    return city, street, house
+
+
 def parse_address_message(text: str) -> tuple[str, str, str] | None:
     raw = text.strip()
     if not raw or raw.startswith("/"):

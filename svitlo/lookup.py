@@ -83,16 +83,26 @@ def house_in_spec(house: str, spec: str) -> bool:
             continue
         span = re.match(r"(\d+)\s*[-–—]\s*(\d+)$", token)
         if span:
+            start, end = int(span.group(1)), int(span.group(2))
+            # «14-16» — це один будинок, не всі номери між ними.
+            if end - start < 5:
+                if _norm_house(token) == _norm_house(house):
+                    return True
+                continue
             if letter:
                 continue
-            start, end = int(span.group(1)), int(span.group(2))
             if start <= number <= end:
                 return True
             continue
         token_number, token_letter = _house_key(token)
-        if token_number == number and token_letter == letter:
+        if token_number == number and token_letter == letter and "-" not in token:
             return True
     return False
+
+
+def _norm_house(value: str) -> str:
+    folded = value.casefold().replace(" ", "")
+    return folded.translate(str.maketrans({"a": "а", "e": "е", "i": "і", "o": "о", "c": "с", "p": "р", "x": "х"}))
 
 
 def _house_key(value: str) -> tuple[int, str]:

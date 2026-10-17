@@ -3,7 +3,7 @@ import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from svitlo.address_input import parse_address_message
+from svitlo.address_input import parse_address_message, parse_loose_address
 from svitlo.bot import handle_callback, handle_text
 from svitlo.db import Store
 from svitlo.lookup import house_in_spec, parse_queue_html, select_queues
@@ -41,6 +41,19 @@ def _bundle() -> ChartBundle:
 
 
 class AddressParseTest(unittest.TestCase):
+    def test_house_14_16_is_one_building(self) -> None:
+        from svitlo.lookup import house_in_spec
+
+        self.assertFalse(house_in_spec("15", "10, 12, 14-16, 16"))
+        self.assertTrue(house_in_spec("15", "13, 15, 17"))
+        self.assertTrue(house_in_spec("8", "1-10, 12"))
+
+    def test_loose_line_with_split_letter(self) -> None:
+        self.assertEqual(
+            parse_loose_address("Луцьк Волі 44 а", ["Луцьк"]),
+            ("Луцьк", "Волі", "44а"),
+        )
+
     def test_three_lines_and_one_line(self) -> None:
         self.assertEqual(
             parse_address_message("Луцьк\nвул. Лесі Українки\nбуд. 15а"),

@@ -62,7 +62,7 @@ def _pick(typed: str, options: list[tuple[str, str]]) -> tuple[str, str] | None:
         name, extra = compact_hits[0]
         return name, f"У «{typed}» зайві пробіли. Правильно: {place_label(name, extra)}."
     names = [item[0] for item in options]
-    close = difflib.get_close_matches(typed, names, n=1, cutoff=0.84)
+    close = difflib.get_close_matches(typed, names, n=1, cutoff=0.93)
     if len(close) == 1:
         chosen = next(item for item in options if item[0] == close[0])
         return chosen[0], f"«{typed}» не збігається з довідником. Прийнято: {place_label(chosen[0], chosen[1])}."

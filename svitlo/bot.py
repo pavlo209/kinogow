@@ -6,7 +6,12 @@ import json
 import urllib.error
 import urllib.request
 
-from svitlo.address_input import clean_place_line, looks_like_house, parse_address_message
+from svitlo.address_input import (
+    clean_place_line,
+    looks_like_house,
+    parse_address_message,
+    parse_loose_address,
+)
 from svitlo.db import Store
 from svitlo.lookup import groups_for_address
 from svitlo.cards import render_coverage, render_guide, render_schedule
@@ -92,7 +97,7 @@ def handle_text(store: Store, chat_id: str, text: str, bundle: ChartBundle) -> B
         place = format_address(removed["city"], removed["street"], 0, 0, removed["house"])
         return BotReply(f"Прибрав адресу {place}.")
 
-    parsed = parse_address_message(text)
+    parsed = parse_address_message(text) or parse_loose_address(text, _cities(store))
     if parsed:
         editing = store.get_dialog(chat_id)
         target_id = int(editing["target_id"]) if editing and editing["step"] == "edit" else 0
@@ -202,6 +207,8 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
             try:
                 bundle = _dispatch(store, client, token, item, bundle)
             except Exception:
+                import traceback
+                traceback.print_exc()
                 callback = item.get("callback_query") or {}
                 message = callback.get("message") or item.get("message") or {}
                 chat = (message.get("chat") or {}).get("id")
