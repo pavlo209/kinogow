@@ -30,7 +30,7 @@ OFFICIAL_SEARCH = (
 
 
 class App:
-    def __init__(self, store: Store, client: HttpChartClient, interval_seconds: int = 1200) -> None:
+    def __init__(self, store: Store, client: HttpChartClient, interval_seconds: int = 300) -> None:
         self.store = store
         self.client = client
         self.interval_seconds = interval_seconds
@@ -300,7 +300,7 @@ a {{ color:var(--accent); }}
     </div>
     {f'<p class="meta">Остання перевірка Telegram: {escape(test_status)}</p>' if test_status else ''}
   </form>
-  <p class="hint">Графік на сайті оновлюють щогодини. Увімкнення може відрізнятися від таблиці на 20–30 хвилин. Перевірка тут іде автоматично приблизно кожні {app.interval_seconds // 60} хв, поки сторінка сервісу запущена.</p>
+  <p class="hint">Волиньобленерго зазвичай публікує графік щогодини, але вимкнення може початися тієї ж хвилини, коли таблиця змінилась. Тому графік тут перечитується кожні {app.interval_seconds // 60} хв. Сам час увімкнення на місці може відрізнятися від таблиці на 20–30 хвилин.</p>
 </main>
 </body>
 </html>"""
@@ -388,7 +388,7 @@ def serve(app: App, host: str, port: int) -> None:
 def main() -> None:
     host = os.environ.get("SVITLO_HOST", "127.0.0.1")
     port = int(os.environ.get("SVITLO_PORT", "8765"))
-    interval = int(os.environ.get("SVITLO_INTERVAL_SECONDS", "1200"))
+    interval = int(os.environ.get("SVITLO_INTERVAL_SECONDS", "300"))
     db_path = os.environ.get("SVITLO_DB", str(DEFAULT_DB))
     store = Store(db_path)
     from svitlo.catalog import load_bundled_catalog
