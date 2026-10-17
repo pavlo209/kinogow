@@ -100,6 +100,11 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("черга 1.1", reply)
         self.assertIn("10:00 до 14:00", reply)
 
+    def test_missing_house_is_reported_only_after_the_street_is_known(self) -> None:
+        self.store.import_queue_rows([("Луцьк", "Волі", "10, 12", 2, 2, True, "")])
+        reply = handle_text(self.store, "9", "Луцьк\nВолі\n99", _bundle())
+        self.assertEqual(reply, "Вашої адреси немає в графіках відключень.")
+
     def test_list_and_remove(self) -> None:
         bundle = _bundle()
         handle_text(self.store, "9", "Луцьк, Лесі Українки, 4", bundle)

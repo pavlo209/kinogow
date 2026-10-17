@@ -159,6 +159,15 @@ def run_bot(store: Store, client: HttpChartClient, stop) -> None:
             send_telegram(token, str(chat["id"]), reply)
 
 
+def _search_site(store: Store, city: str, street: str) -> bool:
+    """Шукає адресу на сайті. True, якщо перевірка відбулася, навіть коли рядків немає."""
+    try:
+        from svitlo.live_lookup import search_and_import
+    except Exception:
+        return False
+    return search_and_import(store, city, street)
+
+
 def _without_house_suffix(street: str, house: str) -> str:
     suffix = f" {house}".casefold()
     if street.casefold().endswith(suffix):
@@ -176,34 +185,40 @@ def _save_and_report(
 ) -> str:
     address_id = store.save_place(city, street, house, chat_id)
     hit = groups_for_address(store, city, street, house)
+    checked = hit.street_known
+    if not hit.queues and not hit.street_known:
+        checked = _search_site(store, city, street)
+        if checked:
+            hit = groups_for_address(store, city, street, house)
     if len(hit.queues) == 1:
         store.set_queue(address_id, hit.queues[0][0], hit.queues[0][1])
-    groups = hit.queues
+    groups = list(hit.queues)
     if not groups:
         address = store.get_address(address_id)
-        if address and int(address["queue"]) > 0:
+        if address and int(address["queue"]) > 0 and not checked:
             groups = [(int(address["queue"]), int(address["subqueue"]))]
-    report = build_report(
-        city=city,
-        street=street,
-        house=house,
-        groups=groups,
-        today=None if bundle.error else bundle.today,
-        tomorrow=None if bundle.error else bundle.tomorrow,
-    )
-    if hit.not_enrolled and not groups:
-        report = (
-            f"{city}, {street}, {house}\n\n"
-            "Цю адресу не залучено до графіка погодинних відключень."
+    if groups:
+        report = build_report(
+            city=city,
+            street=street,
+            house=house,
+            groups=groups,
+            today=None if bundle.error else bundle.today,
+            tomorrow=None if bundle.error else bundle.tomorrow,
         )
-    elif hit.street_known and not hit.house_known:
-        report = (
-            f"{city}, {street}, {house}\n\n"
-            "Такого будинку немає в переліку цієї вулиці. "
-            "Перевірте номер: для літери пишіть разом, наприклад 44а."
+        if bundle.error:
+            report = f"{report}\n\n{bundle.error}"
+    elif checked:
+        report = "Вашої адреси немає в графіках відключень."
+    else:
+        report = build_report(
+            city=city,
+            street=street,
+            house=house,
+            groups=[],
+            today=None,
+            tomorrow=None,
         )
-    if bundle.error and groups:
-        report = f"{report}\n\n{bundle.error}"
     remember_state(store, address_id, bundle)
     return report
 

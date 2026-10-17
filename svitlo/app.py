@@ -386,6 +386,7 @@ def serve(app: App, host: str, port: int) -> None:
 
 
 def main() -> None:
+    os.environ.setdefault("SVITLO_LIVE_SEARCH", "1")
     host = os.environ.get("SVITLO_HOST", "127.0.0.1")
     port = int(os.environ.get("SVITLO_PORT", "8765"))
     interval = int(os.environ.get("SVITLO_INTERVAL_SECONDS", "300"))
