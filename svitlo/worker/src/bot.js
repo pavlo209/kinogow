@@ -2,6 +2,8 @@ import { renderAdmin, renderLocked } from "./admin.js";
 import { districtFor } from "./catalog.js";
 import { ChartDecoder, rangesFor, readPng } from "./decode.js";
 import { formatAddress, formatNotice } from "./match.js";
+import { Store } from "./store.js";
+import { noticeKind, partState } from "./sync.js";
 import { groupsFor, handleCallback, handleText, mainKeyboard } from "./talk.js";
 
 const API = "https://api-voe-poweron.inneti.net";
@@ -11,51 +13,21 @@ export class SvitloBot {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.sql = ctx.storage.sql;
+    this.store = new Store(ctx.storage.sql);
     this.decoder = null;
     this.idat = null;
     this.offset = 0;
     this.job = null;
     ctx.blockConcurrencyWhile(async () => {
-      this.migrate();
+      this.store.migrate();
     });
-  }
-
-  migrate() {
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS addresses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      city TEXT NOT NULL,
-      street TEXT NOT NULL DEFAULT '',
-      house TEXT NOT NULL DEFAULT '',
-      queue INTEGER NOT NULL DEFAULT 0,
-      subqueue INTEGER NOT NULL DEFAULT 0,
-      chat_id TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT ''
-    )`);
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS dialogs (
-      chat_id TEXT PRIMARY KEY,
-      step TEXT NOT NULL,
-      city TEXT NOT NULL DEFAULT '',
-      street TEXT NOT NULL DEFAULT '',
-      target_id INTEGER NOT NULL DEFAULT 0
-    )`);
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS states (
-      address_id INTEGER NOT NULL,
-      part TEXT NOT NULL,
-      signature TEXT NOT NULL,
-      schedule_date TEXT NOT NULL,
-      ranges_json TEXT NOT NULL,
-      image_url TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (address_id, part)
-    )`);
-    this.sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
 
   async fetch(request) {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/health") return Response.json(this.health());
-      if (url.pathname === "/import") return Response.json(await this.importState(await request.json()));
+      if (url.pathname === "/import") return Response.json(this.store.importState(await request.json()));
       if (url.pathname === "/tick") {
         await this.tick();
         return Response.json(this.health());
@@ -68,7 +40,7 @@ export class SvitloBot {
       if (url.pathname === "/admin/link") return Response.json({ url: this.adminLink() });
       return new Response("not found", { status: 404 });
     } catch (error) {
-      this.metaSet("last_error", String(error?.message || error));
+      this.store.metaSet("last_error", String(error?.message || error));
       return Response.json({ ok: false, error: String(error?.message || error) }, { status: 500 });
     }
   }
@@ -97,7 +69,7 @@ export class SvitloBot {
       const chatId = message.chat?.id;
       if (chatId == null) return;
       const admin = this.isAdmin(chatId);
-      const result = handleCallback(this, this.schedule(), String(chatId), callback.data || "", { admin });
+      const result = handleCallback(this.store, this.schedule(), String(chatId), callback.data || "", { admin });
       await this.send(chatId, result);
       return;
     }
@@ -109,7 +81,7 @@ export class SvitloBot {
       await this.send(chatId, this.adminReply(chatId));
       return;
     }
-    const result = handleText(this, this.schedule(), chatId, text, { admin: this.isAdmin(chatId) });
+    const result = handleText(this.store, this.schedule(), chatId, text, { admin: this.isAdmin(chatId) });
     await this.send(chatId, result);
   }
 
@@ -139,20 +111,20 @@ export class SvitloBot {
   }
 
   ensureAdminToken() {
-    const current = this.metaGet("admin_token");
-    const until = Number(this.metaGet("admin_token_until") || 0);
+    const current = this.store.metaGet("admin_token");
+    const until = Number(this.store.metaGet("admin_token_until") || 0);
     if (current && until > Date.now()) return current;
     const bytes = new Uint8Array(24);
     crypto.getRandomValues(bytes);
     const token = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    this.metaSet("admin_token", token);
-    this.metaSet("admin_token_until", String(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    this.store.metaSet("admin_token", token);
+    this.store.metaSet("admin_token_until", String(Date.now() + 30 * 24 * 60 * 60 * 1000));
     return token;
   }
 
   adminHttp(request, url) {
-    const expected = this.metaGet("admin_token");
-    const until = Number(this.metaGet("admin_token_until") || 0);
+    const expected = this.store.metaGet("admin_token");
+    const until = Number(this.store.metaGet("admin_token_until") || 0);
     const valid = Boolean(expected) && until > Date.now();
     const key = request.headers.get("X-Admin-Key") || url.searchParams.get("k") || "";
     const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" };
@@ -167,9 +139,9 @@ export class SvitloBot {
 
   adminHtml() {
     return renderAdmin({
-      rows: this.listAddresses(),
+      rows: this.store.listAddresses(),
       districtOf: districtFor,
-      lastCheck: this.metaGet("last_check"),
+      lastCheck: this.store.metaGet("last_check"),
     });
   }
 
@@ -187,22 +159,22 @@ export class SvitloBot {
     const today = await readOption("pw_gpv_image_today");
     const tomorrow = await readOption("pw_gpv_image_tomorrow");
     if (!today) {
-      this.metaSet("last_error", "Не вдалося отримати графік з сайту Волиньобленерго. Спробуйте ще раз трохи згодом.");
+      this.store.metaSet("last_error", "Не вдалося отримати графік з сайту Волиньобленерго. Спробуйте ще раз трохи згодом.");
       return;
     }
     const todayImage = imageUrl(today.value);
     const tomorrowImage = imageUrl(tomorrow?.value || "");
-    const same = todayImage === this.metaGet("today_image") && tomorrowImage === this.metaGet("tomorrow_image") && this.metaGet("today_slots");
+    const same = todayImage === this.store.metaGet("today_image") && tomorrowImage === this.store.metaGet("tomorrow_image") && this.store.metaGet("today_slots");
     if (same) {
       this.syncIndex = 0;
       this.syncClearTomorrow = false;
       this.phase = "sync";
-      this.metaSet("last_error", "");
+      this.store.metaSet("last_error", "");
       await this.ctx.storage.setAlarm(Date.now() + 50);
       return;
     }
     if (!todayImage) {
-      this.metaSet("last_error", "Графік на сьогодні ще не опубліковано.");
+      this.store.metaSet("last_error", "Графік на сьогодні ще не опубліковано.");
       return;
     }
     this.queue = [
@@ -212,10 +184,10 @@ export class SvitloBot {
       const base = kyivDate(today.date);
       this.queue.push(["tomorrow", tomorrowImage, addDays(base, 1), tomorrow.date || ""]);
     } else {
-      this.metaSet("tomorrow_image", "");
-      this.metaSet("tomorrow_slots", "");
+      this.store.metaSet("tomorrow_image", "");
+      this.store.metaSet("tomorrow_slots", "");
     }
-    this.metaSet("last_error", "");
+    this.store.metaSet("last_error", "");
     await this.startNextJob();
   }
 
@@ -241,12 +213,12 @@ export class SvitloBot {
   }
 
   async syncStep() {
-    const addresses = this.listAddresses();
+    const addresses = this.store.listAddresses();
     const index = this.syncIndex || 0;
     if (index >= addresses.length) {
       this.phase = "";
       this.syncClearTomorrow = false;
-      this.metaSet("last_check", new Date().toISOString());
+      this.store.metaSet("last_check", new Date().toISOString());
       return;
     }
     await this.syncOne(addresses[index], Boolean(this.syncClearTomorrow));
@@ -255,7 +227,7 @@ export class SvitloBot {
     else {
       this.phase = "";
       this.syncClearTomorrow = false;
-      this.metaSet("last_check", new Date().toISOString());
+      this.store.metaSet("last_check", new Date().toISOString());
     }
   }
 
@@ -263,8 +235,8 @@ export class SvitloBot {
     const schedule = this.schedule();
     if (!schedule.today) return;
     const hit = groupsFor(address.city, address.street, address.house);
-    if (hit.queues.length === 1) this.setQueue(Number(address.id), hit.queues[0][0], hit.queues[0][1]);
-    const fresh = this.getAddress(Number(address.id)) || address;
+    if (hit.queues.length === 1) this.store.setQueue(Number(address.id), hit.queues[0][0], hit.queues[0][1]);
+    const fresh = this.store.getAddress(Number(address.id)) || address;
     if (Number(fresh.queue) <= 0 || Number(fresh.subqueue) <= 0) return;
     await this.storePart(fresh, "today", "Сьогодні", schedule.today, true);
     if (schedule.tomorrow || allowEmptyTomorrow) {
@@ -298,11 +270,11 @@ export class SvitloBot {
       updated: this.job.updated,
       slots: this.decoder.schedule,
     };
-    this.metaSet(`${this.job.part}_slots`, JSON.stringify(record.slots));
-    this.metaSet(`${this.job.part}_iso`, record.iso);
-    this.metaSet(`${this.job.part}_label`, record.label);
-    this.metaSet(`${this.job.part}_image`, record.image);
-    this.metaSet(`${this.job.part}_updated`, record.updated);
+    this.store.metaSet(`${this.job.part}_slots`, JSON.stringify(record.slots));
+    this.store.metaSet(`${this.job.part}_iso`, record.iso);
+    this.store.metaSet(`${this.job.part}_label`, record.label);
+    this.store.metaSet(`${this.job.part}_image`, record.image);
+    this.store.metaSet(`${this.job.part}_updated`, record.updated);
     this.decoder = null;
     this.idat = null;
     this.job = null;
@@ -311,8 +283,8 @@ export class SvitloBot {
   }
 
   failParse(error) {
-    this.metaSet("last_error", "Графік опубліковано, але його таблицю не вдалося прочитати. Розмітка зображення змінилась.");
-    this.metaSet("last_error_detail", String(error?.message || error).slice(0, 300));
+    this.store.metaSet("last_error", "Графік опубліковано, але його таблицю не вдалося прочитати. Розмітка зображення змінилась.");
+    this.store.metaSet("last_error_detail", String(error?.message || error).slice(0, 300));
     this.decoder = null;
     this.idat = null;
     this.job = null;
@@ -322,22 +294,17 @@ export class SvitloBot {
 
   async storePart(address, part, when, chart, notify) {
     if (!chart) {
-      this.clearState(Number(address.id), part);
+      this.store.clearState(Number(address.id), part);
       return;
     }
-    let ranges;
-    try {
-      ranges = chart.ranges(Number(address.queue), Number(address.subqueue));
-    } catch {
-      return;
-    }
-    const signature = `${chart.iso}|${ranges.map(([start, end]) => `${start}-${end}`).join(";")}`;
-    const previous = this.getState(Number(address.id), part);
-    if (previous && previous.signature === signature) return;
-    const changed = Boolean(previous && previous.schedule_date === chart.label);
+    const state = partState(chart, address.queue, address.subqueue);
+    if (!state) return;
+    const previous = this.store.getState(Number(address.id), part);
+    const kind = noticeKind(previous, state);
+    if (!kind) return;
     const place = formatAddress(address.city, address.street, address.queue, address.subqueue, address.house);
     if (notify && address.chat_id) {
-      const text = formatNotice({ when, scheduleDate: chart.label, address: place, ranges, changed });
+      const text = formatNotice({ when, scheduleDate: chart.label, address: place, ranges: state.ranges, changed: kind === "changed" });
       const sent = await telegram(this.env, "sendMessage", {
         chat_id: address.chat_id,
         text,
@@ -345,28 +312,7 @@ export class SvitloBot {
       });
       if (!sent.ok) return;
     }
-    this.sql.exec(
-      `INSERT INTO states (address_id, part, signature, schedule_date, ranges_json, image_url)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(address_id, part) DO UPDATE SET
-         signature = excluded.signature,
-         schedule_date = excluded.schedule_date,
-         ranges_json = excluded.ranges_json,
-         image_url = excluded.image_url`,
-      Number(address.id),
-      part,
-      signature,
-      chart.label,
-      JSON.stringify(ranges),
-      chart.image || "",
-    );
-  }
-
-  remember(addressId, schedule) {
-    const address = this.getAddress(addressId);
-    if (!address || Number(address.queue) <= 0) return;
-    this.storePart(address, "today", "Сьогодні", schedule.today, false);
-    this.storePart(address, "tomorrow", "На завтра", schedule.tomorrow, false);
+    this.store.saveState(Number(address.id), part, state);
   }
 
   schedule() {
@@ -377,13 +323,13 @@ export class SvitloBot {
   }
 
   chart(part) {
-    const raw = this.metaGet(`${part}_slots`);
+    const raw = this.store.metaGet(`${part}_slots`);
     if (!raw) return null;
     const slots = JSON.parse(raw);
     return {
-      iso: this.metaGet(`${part}_iso`),
-      label: this.metaGet(`${part}_label`),
-      image: this.metaGet(`${part}_image`),
+      iso: this.store.metaGet(`${part}_iso`),
+      label: this.store.metaGet(`${part}_label`),
+      image: this.store.metaGet(`${part}_image`),
       ranges(queue, subqueue) {
         return rangesFor(slots, queue, subqueue);
       },
@@ -400,147 +346,14 @@ export class SvitloBot {
     }
     return {
       ok: true,
-      addresses: this.listAddresses().length,
+      addresses: this.store.countAddresses(),
       parsing: Boolean(this.job),
-      todayImage: this.metaGet("today_image"),
-      tomorrowImage: this.metaGet("tomorrow_image"),
+      todayImage: this.store.metaGet("today_image"),
+      tomorrowImage: this.store.metaGet("tomorrow_image"),
       sample22: sample,
-      lastError: this.metaGet("last_error"),
-      lastCheck: this.metaGet("last_check"),
+      lastError: this.store.metaGet("last_error"),
+      lastCheck: this.store.metaGet("last_check"),
     };
-  }
-
-  async importState(body) {
-    this.sql.exec("DELETE FROM states");
-    this.sql.exec("DELETE FROM dialogs");
-    this.sql.exec("DELETE FROM addresses");
-    for (const row of body.addresses || []) {
-      this.sql.exec(
-        `INSERT INTO addresses (id, city, street, house, queue, subqueue, chat_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        Number(row.id),
-        row.city || "",
-        row.street || "",
-        row.house || "",
-        Number(row.queue) || 0,
-        Number(row.subqueue) || 0,
-        String(row.chat_id || ""),
-        row.created_at || "",
-      );
-    }
-    for (const row of body.states || []) {
-      this.sql.exec(
-        `INSERT INTO states (address_id, part, signature, schedule_date, ranges_json, image_url)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        Number(row.address_id),
-        row.part,
-        row.signature,
-        row.schedule_date,
-        row.ranges_json || "[]",
-        row.image_url || "",
-      );
-    }
-    return { ok: true, addresses: (body.addresses || []).length, states: (body.states || []).length };
-  }
-
-  getDialog(chatId) {
-    return this.sql.exec("SELECT * FROM dialogs WHERE chat_id = ?", String(chatId)).toArray()[0] ?? null;
-  }
-
-  setDialog(chatId, step, city = "", street = "", targetId = 0) {
-    this.sql.exec(
-      `INSERT INTO dialogs (chat_id, step, city, street, target_id) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(chat_id) DO UPDATE SET step = excluded.step, city = excluded.city, street = excluded.street, target_id = excluded.target_id`,
-      String(chatId),
-      step,
-      city,
-      street,
-      Number(targetId) || 0,
-    );
-  }
-
-  clearDialog(chatId) {
-    this.sql.exec("DELETE FROM dialogs WHERE chat_id = ?", String(chatId));
-  }
-
-  listForChat(chatId) {
-    return this.sql.exec("SELECT * FROM addresses WHERE chat_id = ? ORDER BY id", String(chatId)).toArray();
-  }
-
-  listAddresses() {
-    return this.sql.exec("SELECT * FROM addresses ORDER BY id").toArray();
-  }
-
-  getAddress(id) {
-    return this.sql.exec("SELECT * FROM addresses WHERE id = ?", Number(id)).toArray()[0] ?? null;
-  }
-
-  savePlace(city, street, house, chatId) {
-    const existing = this.sql.exec(
-      "SELECT * FROM addresses WHERE lower(city) = lower(?) AND lower(street) = lower(?) AND lower(house) = lower(?) AND chat_id = ?",
-      city,
-      street,
-      house,
-      String(chatId),
-    ).toArray()[0];
-    if (existing) return Number(existing.id);
-    this.sql.exec(
-      "INSERT INTO addresses (city, street, house, queue, subqueue, chat_id, created_at) VALUES (?, ?, ?, 0, 0, ?, ?)",
-      city,
-      street,
-      house,
-      String(chatId),
-      new Date().toISOString(),
-    );
-    return Number(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
-  }
-
-  updateAddress(id, city, street, house) {
-    this.sql.exec(
-      "UPDATE addresses SET city = ?, street = ?, house = ?, queue = 0, subqueue = 0 WHERE id = ?",
-      city,
-      street,
-      house,
-      Number(id),
-    );
-    this.sql.exec("DELETE FROM states WHERE address_id = ?", Number(id));
-    return Number(id);
-  }
-
-  setQueue(id, queue, subqueue) {
-    this.sql.exec("UPDATE addresses SET queue = ?, subqueue = ? WHERE id = ?", queue, subqueue, Number(id));
-  }
-
-  deleteAddress(id) {
-    this.sql.exec("DELETE FROM states WHERE address_id = ?", Number(id));
-    this.sql.exec("DELETE FROM addresses WHERE id = ?", Number(id));
-  }
-
-  deleteLastForChat(chatId) {
-    const row = this.sql.exec("SELECT * FROM addresses WHERE chat_id = ? ORDER BY id DESC LIMIT 1", String(chatId)).toArray()[0];
-    if (!row) return null;
-    this.deleteAddress(row.id);
-    return row;
-  }
-
-  getState(addressId, part) {
-    return this.sql.exec("SELECT * FROM states WHERE address_id = ? AND part = ?", Number(addressId), part).toArray()[0] ?? null;
-  }
-
-  clearState(addressId, part) {
-    this.sql.exec("DELETE FROM states WHERE address_id = ? AND part = ?", Number(addressId), part);
-  }
-
-  metaGet(key) {
-    return this.sql.exec("SELECT value FROM meta WHERE key = ?", key).toArray()[0]?.value ?? "";
-  }
-
-  metaSet(key, value) {
-    this.sql.exec(
-      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      key,
-      String(value ?? ""),
-    );
   }
 }
 
