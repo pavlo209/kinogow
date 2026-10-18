@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import io
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 _FONT = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
 _FONT_BOLD = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
+# Шрифти з кирилицею, які зазвичай є на Linux, macOS і Windows.
+_FALLBACK = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+]
+_FALLBACK_BOLD = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+]
 
 INK = (232, 238, 246)
 MUTED = (168, 186, 206)
@@ -158,11 +173,14 @@ def _wrap(draw, text, x, y, width, font, fill) -> None:
         draw.text((x, cursor), line, font=font, fill=fill)
 
 
+@lru_cache(maxsize=64)
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    path = _FONT_BOLD if bold else _FONT
-    if not Path(path).exists():
-        path = _FONT
-    return ImageFont.truetype(path, size)
+    preferred = [_FONT_BOLD, _FONT] if bold else [_FONT]
+    fallbacks = _FALLBACK_BOLD + _FALLBACK if bold else _FALLBACK
+    for path in [*preferred, *fallbacks]:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default(size)
 
 
 def _png(image: Image.Image) -> bytes:
