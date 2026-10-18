@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Store } from "../src/store.js";
-import { memorySql } from "./sqlite.js";
+import { memorySql } from "./helpers.js";
 
 function freshStore() {
   const store = new Store(memorySql());

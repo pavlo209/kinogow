@@ -89,15 +89,14 @@ export function addressCard({ address, district = "", groups, today, tomorrow, n
   const queues = groups.map(([queue, subqueue]) => `<b>${queue}.${subqueue}</b>`).join(", ");
   lines.push(`⚡ ${groups.length === 1 ? "Черга" : "Черги"} ${queues}${area ? ` · ${esc(area)}` : ""}`);
   const single = groups.length === 1;
-  if (single && today && today.iso === clock.iso) {
+  if (single && today && today.iso === clock.iso && safeRanges(today, groups[0]).length) {
     lines.push("", nowStatus(safeRanges(today, groups[0]), clock.minutes));
   }
   for (const [part, chart] of [["today", today], ["tomorrow", tomorrow]]) {
     lines.push("", single ? dayBlock(part, chart, groups[0], clock) : multiBlock(part, chart, groups, clock));
   }
-  if (single && [today, tomorrow].some((chart) => chart && safeRanges(chart, groups[0]).length)) {
-    lines.push("", LEGEND);
-  }
+  lines.push("");
+  if (single && [today, tomorrow].some((chart) => chart && safeRanges(chart, groups[0]).length)) lines.push(LEGEND);
   lines.push(footer(address, clock));
   return lines.join("\n");
 }

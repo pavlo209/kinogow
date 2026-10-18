@@ -1,23 +1,31 @@
-import { renderAdmin, renderLocked } from "./admin.js";
-import { districtFor } from "./catalog.js";
+import { adminAccess, adminCookie, adminLink } from "./access.js";
+import { adminDigest, renderAdmin, renderLocked, summarize } from "./admin.js";
+import { districtFor, groupsFor } from "./catalog.js";
 import { ChartDecoder, rangesFor, readPng } from "./decode.js";
-import { formatAddress, formatNotice } from "./match.js";
+import { noticeText } from "./format.js";
+import { addDays, imageUrl, kyivDate, labelFromIso, readOption } from "./source.js";
 import { Store } from "./store.js";
 import { noticeKind, partState } from "./sync.js";
-import { groupsFor, handleCallback, handleText, mainKeyboard } from "./talk.js";
+import { handleCallback, handleText, isAdminRequest } from "./talk.js";
+import { createTelegram, deliver } from "./telegram.js";
+import * as T from "./texts.js";
 
-const API = "https://api-voe-poweron.inneti.net";
 const CHUNK = 1536;
+// Скільки адрес перевіряти за один виклик alarm: вкладаємось у ліміт процесора й 30 повідомлень/с Telegram.
+export const SYNC_BATCH = 20;
 
 export class SvitloBot {
-  constructor(ctx, env) {
+  constructor(ctx, env, deps = {}) {
     this.ctx = ctx;
     this.env = env;
     this.store = new Store(ctx.storage.sql);
+    this.telegram = deps.telegram ?? createTelegram(env);
     this.decoder = null;
     this.idat = null;
     this.offset = 0;
     this.job = null;
+    this.phase = "";
+    this.syncCursor = 0;
     ctx.blockConcurrencyWhile(async () => {
       this.store.migrate();
     });
@@ -36,8 +44,9 @@ export class SvitloBot {
         await this.onUpdate(await request.json());
         return new Response("ok");
       }
+      if (url.pathname === "/setup") return Response.json(await this.setup());
       if (url.pathname === "/admin") return this.adminHttp(request, url);
-      if (url.pathname === "/admin/link") return Response.json({ url: this.adminLink() });
+      if (url.pathname === "/admin/link") return Response.json({ url: adminLink(this.store, this.env.PUBLIC_URL) });
       return new Response("not found", { status: 404 });
     } catch (error) {
       this.store.metaSet("last_error", String(error?.message || error));
@@ -47,111 +56,110 @@ export class SvitloBot {
 
   async alarm() {
     try {
-      if (this.phase === "sync") {
-        await this.syncStep();
-        return;
-      }
-      if (this.phase === "next") {
-        await this.startNextJob();
-        return;
-      }
+      if (this.phase === "sync") return await this.syncStep();
+      if (this.phase === "next") return await this.startNextJob();
       await this.parseStep();
     } catch (error) {
+      if (this.phase === "sync") {
+        this.store.metaSet("last_error", `Розсилка зупинилась: ${String(error?.message || error).slice(0, 200)}`);
+        this.phase = "";
+        return;
+      }
       this.failParse(error);
     }
   }
 
-  async onUpdate(update) {
+  async onUpdate(update, now = new Date()) {
+    if (update.my_chat_member) return this.onMembership(update.my_chat_member, now);
     const callback = update.callback_query;
     if (callback) {
-      await telegram(this.env, "answerCallbackQuery", { callback_query_id: callback.id });
       const message = callback.message || {};
       const chatId = message.chat?.id;
-      if (chatId == null) return;
-      const admin = this.isAdmin(chatId);
-      const result = handleCallback(this.store, this.schedule(), String(chatId), callback.data || "", { admin });
-      await this.send(chatId, result);
+      if (chatId == null) {
+        await this.telegram("answerCallbackQuery", { callback_query_id: callback.id });
+        return;
+      }
+      this.store.touchUser(chatId, callback.from || {}, now);
+      const result = handleCallback(this.store, this.schedule(), String(chatId), callback.data || "", { admin: this.isAdmin(chatId), now });
+      const toast = [].concat(result).find((item) => item.toast)?.toast;
+      await this.telegram("answerCallbackQuery", { callback_query_id: callback.id, ...(toast ? { text: toast } : {}) });
+      await this.reply(chatId, result, message.message_id);
       return;
     }
     const message = update.message || {};
-    const text = message.text || "";
-    if (message.chat?.id == null || !text) return;
+    if (message.chat?.id == null) return;
     const chatId = String(message.chat.id);
-    if (this.isAdminCommand(text)) {
-      await this.send(chatId, this.adminReply(chatId));
-      return;
+    this.store.touchUser(chatId, message.from || {}, now);
+    const text = message.text || "";
+    if (!text) return this.reply(chatId, { text: T.TEXT_ONLY, markup: T.mainKeyboard(this.isAdmin(chatId)) });
+    if (isAdminRequest(text)) return this.reply(chatId, this.adminReply(chatId, now));
+    const result = handleText(this.store, this.schedule(), chatId, text, { admin: this.isAdmin(chatId), now, user: message.from });
+    await this.reply(chatId, result);
+  }
+
+  onMembership(member, now) {
+    const chatId = member.chat?.id;
+    if (chatId == null) return;
+    const status = member.new_chat_member?.status;
+    if (status === "kicked" || status === "left") {
+      this.store.touchUser(chatId, member.from || {}, now);
+      this.store.markBlocked(chatId);
+    } else if (status === "member") {
+      this.store.touchUser(chatId, member.from || {}, now);
     }
-    const result = handleText(this.store, this.schedule(), chatId, text, { admin: this.isAdmin(chatId) });
-    await this.send(chatId, result);
+  }
+
+  async reply(chatId, result, messageId) {
+    const outcome = await deliver(this.telegram, chatId, result, { messageId });
+    if (outcome.blocked) this.store.markBlocked(chatId);
+    // Не кидаємо помилку: інакше Telegram повторюватиме те саме оновлення.
+    else if (!outcome.ok) this.store.metaSet("last_error", `Telegram: ${outcome.description || "повідомлення не пішло"}`);
+    return outcome;
   }
 
   isAdmin(chatId) {
     return String(chatId) === String(this.env.ADMIN_CHAT_ID || "").trim();
   }
 
-  isAdminCommand(text) {
-    const cleaned = String(text || "").trim();
-    const command = cleaned.startsWith("/") ? cleaned.split(/\s+/)[0].toLowerCase().split("@")[0] : "";
-    return command === "/admin" || cleaned.toLowerCase() === "адмін-панель";
-  }
-
-  adminReply(chatId) {
-    if (!this.isAdmin(chatId)) {
-      return { text: "Панель адміністратора відкривається лише власнику бота.", markup: mainKeyboard(false) };
-    }
+  adminReply(chatId, now = new Date()) {
+    if (!this.isAdmin(chatId)) return { text: T.ADMIN_ONLY, markup: T.mainKeyboard(false) };
+    const report = summarize({ users: this.store.listUsers(), addresses: this.store.listAddresses(), now });
     return {
-      text: `Ви адміністратор.\n\nВідкрийте панель: там видно, скільки людей користується ботом і які міста, села та вулиці вони додали.\n${this.adminLink()}`,
-      markup: mainKeyboard(true),
+      text: adminDigest(report, this.store.metaGet("last_check")),
+      markup: { inline_keyboard: [[{ text: T.OPEN_ADMIN, url: adminLink(this.store, this.env.PUBLIC_URL) }]] },
     };
   }
 
-  adminLink() {
-    const base = String(this.env.PUBLIC_URL || "https://pavlo-telegram-bot.pmodsp.workers.dev").replace(/\/$/, "");
-    return `${base}/admin/enter/${this.ensureAdminToken()}`;
-  }
-
-  ensureAdminToken() {
-    const current = this.store.metaGet("admin_token");
-    const until = Number(this.store.metaGet("admin_token_until") || 0);
-    if (current && until > Date.now()) return current;
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    const token = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    this.store.metaSet("admin_token", token);
-    this.store.metaSet("admin_token_until", String(Date.now() + 30 * 24 * 60 * 60 * 1000));
-    return token;
-  }
-
   adminHttp(request, url) {
-    const expected = this.store.metaGet("admin_token");
-    const until = Number(this.store.metaGet("admin_token_until") || 0);
-    const valid = Boolean(expected) && until > Date.now();
-    const key = request.headers.get("X-Admin-Key") || url.searchParams.get("k") || "";
-    const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" };
-    if (key && valid && key === expected) {
-      headers["Set-Cookie"] = `svitlo_admin=${encodeURIComponent(key)}; HttpOnly; Secure; SameSite=Lax; Path=/admin; Max-Age=2592000`;
-      return new Response(this.adminHtml(), { headers });
-    }
-    const cookie = readCookie(request, "svitlo_admin");
-    if (valid && cookie === expected) return new Response(this.adminHtml(), { headers });
-    return new Response(renderLocked(), { status: 401, headers });
-  }
-
-  adminHtml() {
-    return renderAdmin({
-      rows: this.store.listAddresses(),
+    const access = adminAccess(this.store, request, url);
+    const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" };
+    if (!access) return new Response(renderLocked(), { status: 401, headers });
+    if (access === "fresh") headers["Set-Cookie"] = adminCookie(this.store);
+    const html = renderAdmin({
+      users: this.store.listUsers(),
+      addresses: this.store.listAddresses(),
       districtOf: districtFor,
       lastCheck: this.store.metaGet("last_check"),
+      lastError: this.store.metaGet("last_error"),
     });
+    return new Response(html, { headers });
   }
 
-  async send(chatId, result) {
-    const sent = await telegram(this.env, "sendMessage", {
-      chat_id: chatId,
-      text: String(result.text || "").slice(0, 4000),
-      reply_markup: result.markup,
-    });
-    if (!sent.ok) throw new Error(sent.description || "Повідомлення в Telegram не пішло");
+  // Одноразово після деплою: меню команд, опис бота і вебхук з подіями блокування.
+  async setup() {
+    const result = {
+      commands: await this.telegram("setMyCommands", { commands: T.COMMANDS }),
+      description: await this.telegram("setMyDescription", { description: T.BOT_DESCRIPTION }),
+      shortDescription: await this.telegram("setMyShortDescription", { short_description: T.BOT_SHORT }),
+    };
+    if (this.env.WEBHOOK_SECRET && this.env.PUBLIC_URL) {
+      result.webhook = await this.telegram("setWebhook", {
+        url: `${String(this.env.PUBLIC_URL).replace(/\/$/, "")}/telegram`,
+        secret_token: String(this.env.WEBHOOK_SECRET).trim(),
+        allowed_updates: ["message", "callback_query", "my_chat_member"],
+      });
+    }
+    return Object.fromEntries(Object.entries(result).map(([key, value]) => [key, { ok: Boolean(value.ok), description: value.description || "" }]));
   }
 
   async tick() {
@@ -164,25 +172,21 @@ export class SvitloBot {
     }
     const todayImage = imageUrl(today.value);
     const tomorrowImage = imageUrl(tomorrow?.value || "");
-    const same = todayImage === this.store.metaGet("today_image") && tomorrowImage === this.store.metaGet("tomorrow_image") && this.store.metaGet("today_slots");
+    const same = todayImage === this.store.metaGet("today_image")
+      && tomorrowImage === this.store.metaGet("tomorrow_image")
+      && this.store.metaGet("today_slots");
     if (same) {
-      this.syncIndex = 0;
-      this.syncClearTomorrow = false;
-      this.phase = "sync";
       this.store.metaSet("last_error", "");
-      await this.ctx.storage.setAlarm(Date.now() + 50);
+      await this.startSync(false);
       return;
     }
     if (!todayImage) {
       this.store.metaSet("last_error", "Графік на сьогодні ще не опубліковано.");
       return;
     }
-    this.queue = [
-      ["today", todayImage, kyivDate(today.date), today.date || ""],
-    ];
+    this.queue = [["today", todayImage, kyivDate(today.date), today.date || ""]];
     if (tomorrowImage) {
-      const base = kyivDate(today.date);
-      this.queue.push(["tomorrow", tomorrowImage, addDays(base, 1), tomorrow.date || ""]);
+      this.queue.push(["tomorrow", tomorrowImage, addDays(kyivDate(today.date), 1), tomorrow.date || ""]);
     } else {
       this.store.metaSet("tomorrow_image", "");
       this.store.metaSet("tomorrow_slots", "");
@@ -194,10 +198,7 @@ export class SvitloBot {
   async startNextJob() {
     const next = this.queue?.shift();
     if (!next) {
-      this.syncIndex = 0;
-      this.syncClearTomorrow = true;
-      this.phase = "sync";
-      await this.ctx.storage.setAlarm(Date.now() + 50);
+      await this.startSync(true);
       return;
     }
     const [part, image, iso, updated] = next;
@@ -210,38 +211,6 @@ export class SvitloBot {
     this.job = { part, image, iso, updated };
     this.phase = "parse";
     await this.ctx.storage.setAlarm(Date.now() + 50);
-  }
-
-  async syncStep() {
-    const addresses = this.store.listAddresses();
-    const index = this.syncIndex || 0;
-    if (index >= addresses.length) {
-      this.phase = "";
-      this.syncClearTomorrow = false;
-      this.store.metaSet("last_check", new Date().toISOString());
-      return;
-    }
-    await this.syncOne(addresses[index], Boolean(this.syncClearTomorrow));
-    this.syncIndex = index + 1;
-    if (this.syncIndex < addresses.length) await this.ctx.storage.setAlarm(Date.now() + 40);
-    else {
-      this.phase = "";
-      this.syncClearTomorrow = false;
-      this.store.metaSet("last_check", new Date().toISOString());
-    }
-  }
-
-  async syncOne(address, allowEmptyTomorrow) {
-    const schedule = this.schedule();
-    if (!schedule.today) return;
-    const hit = groupsFor(address.city, address.street, address.house);
-    if (hit.queues.length === 1) this.store.setQueue(Number(address.id), hit.queues[0][0], hit.queues[0][1]);
-    const fresh = this.store.getAddress(Number(address.id)) || address;
-    if (Number(fresh.queue) <= 0 || Number(fresh.subqueue) <= 0) return;
-    await this.storePart(fresh, "today", "Сьогодні", schedule.today, true);
-    if (schedule.tomorrow || allowEmptyTomorrow) {
-      await this.storePart(fresh, "tomorrow", "На завтра", schedule.tomorrow, true);
-    }
   }
 
   async parseStep() {
@@ -263,18 +232,12 @@ export class SvitloBot {
       await this.ctx.storage.setAlarm(Date.now() + 80);
       return;
     }
-    const record = {
-      iso: this.job.iso,
-      label: labelFromIso(this.job.iso),
-      image: this.job.image,
-      updated: this.job.updated,
-      slots: this.decoder.schedule,
-    };
-    this.store.metaSet(`${this.job.part}_slots`, JSON.stringify(record.slots));
-    this.store.metaSet(`${this.job.part}_iso`, record.iso);
-    this.store.metaSet(`${this.job.part}_label`, record.label);
-    this.store.metaSet(`${this.job.part}_image`, record.image);
-    this.store.metaSet(`${this.job.part}_updated`, record.updated);
+    const { part, iso, image, updated } = this.job;
+    this.store.metaSet(`${part}_slots`, JSON.stringify(this.decoder.schedule));
+    this.store.metaSet(`${part}_iso`, iso);
+    this.store.metaSet(`${part}_label`, labelFromIso(iso));
+    this.store.metaSet(`${part}_image`, image);
+    this.store.metaSet(`${part}_updated`, updated);
     this.decoder = null;
     this.idat = null;
     this.job = null;
@@ -292,34 +255,74 @@ export class SvitloBot {
     this.phase = "";
   }
 
-  async storePart(address, part, when, chart, notify) {
-    if (!chart) {
-      this.store.clearState(Number(address.id), part);
+  async startSync(clearTomorrow) {
+    this.syncCursor = 0;
+    this.syncClearTomorrow = Boolean(clearTomorrow);
+    this.phase = "sync";
+    await this.ctx.storage.setAlarm(Date.now() + 50);
+  }
+
+  async syncStep(now = new Date()) {
+    const batch = this.store.addressesAfter(this.syncCursor, SYNC_BATCH);
+    const schedule = this.schedule();
+    for (const address of batch) {
+      const retryAfter = await this.syncOne(address, schedule, now);
+      if (retryAfter) {
+        await this.ctx.storage.setAlarm(now.getTime() + retryAfter * 1000);
+        return;
+      }
+      this.syncCursor = Number(address.id);
+    }
+    if (batch.length === SYNC_BATCH) {
+      await this.ctx.storage.setAlarm(Date.now() + 200);
       return;
     }
+    this.phase = "";
+    this.syncClearTomorrow = false;
+    this.store.metaSet("last_check", now.toISOString());
+  }
+
+  // Повертає кількість секунд очікування, якщо Telegram просить пригальмувати.
+  async syncOne(address, schedule, now) {
+    if (!schedule.today) return 0;
+    const hit = groupsFor(address.city, address.street, address.house);
+    if (hit.queues.length === 1) this.store.setQueue(Number(address.id), hit.queues[0][0], hit.queues[0][1]);
+    const fresh = this.store.getAddress(Number(address.id)) || address;
+    if (Number(fresh.queue) <= 0 || Number(fresh.subqueue) <= 0) return 0;
+    const user = fresh.chat_id ? this.store.getUser(fresh.chat_id) : null;
+    const silent = Boolean(Number(fresh.muted) || Number(user?.blocked));
+    for (const part of ["today", "tomorrow"]) {
+      if (part === "tomorrow" && !schedule.tomorrow && !this.syncClearTomorrow) continue;
+      const retryAfter = await this.syncPart(fresh, part, schedule[part], silent, now);
+      if (retryAfter) return retryAfter;
+    }
+    return 0;
+  }
+
+  async syncPart(address, part, chart, silent, now) {
+    if (!chart) {
+      this.store.clearState(Number(address.id), part);
+      return 0;
+    }
     const state = partState(chart, address.queue, address.subqueue);
-    if (!state) return;
-    const previous = this.store.getState(Number(address.id), part);
-    const kind = noticeKind(previous, state);
-    if (!kind) return;
-    const place = formatAddress(address.city, address.street, address.queue, address.subqueue, address.house);
-    if (notify && address.chat_id) {
-      const text = formatNotice({ when, scheduleDate: chart.label, address: place, ranges: state.ranges, changed: kind === "changed" });
-      const sent = await telegram(this.env, "sendMessage", {
-        chat_id: address.chat_id,
-        text,
-        reply_markup: { inline_keyboard: [[{ text: clip(place), callback_data: `open:${address.id}` }]] },
+    if (!state) return 0;
+    const kind = noticeKind(this.store.getState(Number(address.id), part), state);
+    if (!kind) return 0;
+    if (!silent && address.chat_id) {
+      const outcome = await deliver(this.telegram, address.chat_id, {
+        text: noticeText({ address, part, chart, kind, now }),
+        markup: { inline_keyboard: [[{ text: T.OPEN_CARD, callback_data: `show:${address.id}` }]] },
       });
-      if (!sent.ok) return;
+      if (outcome.retryAfter) return outcome.retryAfter;
+      if (outcome.blocked) this.store.markBlocked(address.chat_id);
+      else if (!outcome.ok) return 0;
     }
     this.store.saveState(Number(address.id), part, state);
+    return 0;
   }
 
   schedule() {
-    return {
-      today: this.chart("today"),
-      tomorrow: this.chart("tomorrow"),
-    };
+    return { today: this.chart("today"), tomorrow: this.chart("tomorrow") };
   }
 
   chart(part) {
@@ -339,15 +342,16 @@ export class SvitloBot {
   health() {
     let sample = null;
     try {
-      const today = this.chart("today");
-      sample = today ? today.ranges(2, 2) : null;
+      sample = this.chart("today")?.ranges(2, 2) ?? null;
     } catch {
       sample = null;
     }
     return {
       ok: true,
+      users: this.store.countUsers(),
       addresses: this.store.countAddresses(),
       parsing: Boolean(this.job),
+      syncing: this.phase === "sync",
       todayImage: this.store.metaGet("today_image"),
       tomorrowImage: this.store.metaGet("tomorrow_image"),
       sample22: sample,
@@ -355,61 +359,4 @@ export class SvitloBot {
       lastCheck: this.store.metaGet("last_check"),
     };
   }
-}
-
-async function telegram(env, method, payload) {
-  if (!env.TELEGRAM_TOKEN) return { ok: false };
-  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return response.json();
-}
-
-async function readOption(key) {
-  const response = await fetch(`${API}/api/options?option_key=${key}`, {
-    headers: { Accept: "application/json", "User-Agent": "SvitloMonitor/1.0" },
-  });
-  if (!response.ok) return null;
-  const payload = await response.json();
-  if (Array.isArray(payload)) return payload[0] || null;
-  const members = payload["hydra:member"];
-  return members?.[0] || null;
-}
-
-function imageUrl(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-  return text.startsWith("http") ? text : API + text;
-}
-
-function kyivDate(iso) {
-  if (!iso) return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv" }).format(new Date());
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv" }).format(new Date(iso));
-}
-
-function addDays(iso, days) {
-  const [year, month, day] = iso.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day + days));
-  return date.toISOString().slice(0, 10);
-}
-
-function labelFromIso(iso) {
-  const [year, month, day] = iso.split("-");
-  return `${day}.${month}.${year}`;
-}
-
-function readCookie(request, name) {
-  const header = request.headers.get("Cookie") || "";
-  for (const part of header.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
-  }
-  return "";
-}
-
-function clip(value) {
-  const text = String(value || "").trim();
-  return text.length > 60 ? `${text.slice(0, 57)}…` : text;
 }

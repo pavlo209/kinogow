@@ -93,6 +93,10 @@ export class Store {
     return this.sql.exec("SELECT * FROM users WHERE chat_id = ?", String(chatId)).toArray()[0] ?? null;
   }
 
+  countUsers() {
+    return Number(this.sql.exec("SELECT COUNT(*) AS n FROM users").one().n);
+  }
+
   listUsers() {
     return this.sql.exec("SELECT * FROM users ORDER BY first_seen DESC, chat_id").toArray();
   }
@@ -137,11 +141,14 @@ export class Store {
     return this.sql.exec("SELECT * FROM addresses WHERE id = ?", Number(id)).toArray()[0] ?? null;
   }
 
+  // lower() у SQLite не знає кирилиці, тому порівнюємо в JS.
+  findPlace(city, street, house, chatId) {
+    const key = placeKey(city, street, house);
+    return this.listForChat(chatId).find((row) => placeKey(row.city, row.street, row.house) === key) ?? null;
+  }
+
   savePlace(city, street, house, chatId) {
-    // lower() у SQLite не знає кирилиці, тому порівнюємо в JS.
-    const key = [city, street, house].map((part) => String(part).trim().toLowerCase()).join("|");
-    const existing = this.listForChat(chatId)
-      .find((row) => [row.city, row.street, row.house].map((part) => String(part).trim().toLowerCase()).join("|") === key);
+    const existing = this.findPlace(city, street, house, chatId);
     if (existing) return Number(existing.id);
     this.sql.exec(
       "INSERT INTO addresses (city, street, house, queue, subqueue, chat_id, created_at) VALUES (?, ?, ?, 0, 0, ?, ?)",
@@ -272,4 +279,8 @@ export class Store {
     this.backfillUsers();
     return { ok: true, addresses: (body.addresses || []).length, states: (body.states || []).length };
   }
+}
+
+function placeKey(city, street, house) {
+  return [city, street, house].map((part) => String(part ?? "").trim().toLowerCase()).join("|");
 }

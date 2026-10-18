@@ -155,56 +155,6 @@ export function formatAddress(city, street, queue, subqueue, house = "") {
   return place;
 }
 
-export function formatNotice({ when, scheduleDate, address, ranges, changed }) {
-  const prefix = changed ? "Графік змінився. " : "";
-  if (!ranges.length) {
-    return `${prefix}${when}, ${scheduleDate}, за адресою ${address} відключень немає.`;
-  }
-  const parts = ranges.map(([start, end]) => `з ${start} до ${end}`);
-  const hours = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} та ${parts.at(-1)}`;
-  return `${prefix}${when}, ${scheduleDate}, за адресою ${address} відключення ${hours}.`;
-}
-
-export function buildReport({ city, street, house, groups, today, tomorrow }) {
-  if (!groups.length) {
-    const place = formatAddress(city, street, 0, 0, house);
-    return `${place}\n\nЗа цією адресою ще не визначено чергу, тому години відключення не зібрані. Перевірю пошук Волиньобленерго ще раз автоматично.`;
-  }
-  if (groups.length === 1) {
-    const [queue, subqueue] = groups[0];
-    const place = formatAddress(city, street, queue, subqueue, house);
-    return [place, "", dayLine("Сьогодні", today, queue, subqueue), dayLine("На завтра", tomorrow, queue, subqueue)].join("\n");
-  }
-  const lines = [formatAddress(city, street, 0, 0, house), ""];
-  for (const [when, chart] of [["Сьогодні", today], ["На завтра", tomorrow]]) {
-    lines.push(chart ? `${when}, ${chart.label}` : when);
-    if (!chart) {
-      lines.push("Графік ще не опубліковано.", "");
-      continue;
-    }
-    for (const [queue, subqueue] of groups) {
-      const ranges = chart.ranges(queue, subqueue);
-      const hours = ranges.length ? hoursText(ranges) : "відключень немає";
-      lines.push(`Черга ${queue}.${subqueue}: ${hours}.`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n").trim();
-}
-
-function dayLine(when, chart, queue, subqueue) {
-  if (!chart) return `${when}: графік ще не опубліковано.`;
-  const ranges = chart.ranges(queue, subqueue);
-  if (!ranges.length) return `${when}, ${chart.label}: відключень немає.`;
-  return `${when}, ${chart.label}: відключення ${hoursText(ranges)}.`;
-}
-
-function hoursText(ranges) {
-  const parts = ranges.map(([start, end]) => `з ${start} до ${end}`);
-  if (parts.length === 1) return parts[0];
-  return `${parts.slice(0, -1).join(", ")} та ${parts.at(-1)}`;
-}
-
 function pick(typed, options) {
   const typedKey = nameKey(typed);
   const compact = typedKey.replaceAll(" ", "");
@@ -234,7 +184,7 @@ function unknownCity(typed, places) {
   return lines.join("\n");
 }
 
-function closeNames(typed, names, cutoff, limit) {
+export function closeNames(typed, names, cutoff, limit) {
   const scored = [];
   const typedKey = nameKey(typed);
   for (const name of names) {

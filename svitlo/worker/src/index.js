@@ -16,7 +16,7 @@ export default {
         headers: { "Content-Type": "application/json" },
       });
     }
-    if ((url.pathname === "/import" || url.pathname === "/tick" || url.pathname === "/admin/link") && request.method === "POST") {
+    if (["/import", "/tick", "/setup", "/admin/link"].includes(url.pathname) && request.method === "POST") {
       const provided = (request.headers.get("X-Import-Secret") || "").trim();
       if (!env.IMPORT_SECRET || provided !== String(env.IMPORT_SECRET).trim()) {
         return new Response("forbidden", { status: 403 });
