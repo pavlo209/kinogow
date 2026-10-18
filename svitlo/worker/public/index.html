@@ -3,27 +3,142 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Графік світла</title>
+<title>Світло Волині · графік відключень за адресою</title>
+<meta name="description" content="Telegram-бот показує графік відключень світла у Волинській області за вашою адресою і пише, щойно графік зміниться.">
+<meta property="og:title" content="Світло Волині">
+<meta property="og:description" content="Графік відключень світла за вашою адресою. Сповіщення в Telegram, щойно графік зміниться.">
+<meta property="og:image" content="/hero.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
 <style>
-:root { color-scheme: light; --ink:#172033; --muted:#5c6b80; --bg:#eef3f8; --card:#fff; --line:#d7e0ea; --accent:#1d4e89; }
-* { box-sizing: border-box; }
-body { margin:0; font:16px/1.45 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
-main { max-width:880px; margin:0 auto; padding:28px 16px 64px; }
-img { width:100%; height:auto; max-height:420px; object-fit:cover; object-position:center 42%; display:block; border-radius:20px; }
-h1 { font-size:32px; line-height:1.15; margin:18px 0 8px; }
-p { color:var(--muted); }
-.card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
-a { color:var(--accent); }
+:root {
+  color-scheme: light;
+  --bg:#f6f3ec; --surface:#ffffff; --ink:#16181d; --muted:#5f6876; --line:#e7e1d5;
+  --accent:#f2a900; --accent-soft:#fff1c7; --on-accent:#1a1300;
+  --night:#121a2b; --night-ink:#f3f1ea; --night-muted:#c4c9d4;
+  --font:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif; --display:"Unbounded","Manrope",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme:dark; --bg:#0e1014; --surface:#161a21; --ink:#edeff3; --muted:#9aa4b2; --line:#272d38; --accent:#ffc233; --accent-soft:rgba(255,194,51,.14); }
+}
+:root[data-theme="dark"] { color-scheme:dark; --bg:#0e1014; --surface:#161a21; --ink:#edeff3; --muted:#9aa4b2; --line:#272d38; --accent:#ffc233; --accent-soft:rgba(255,194,51,.14); }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 var(--font); }
+a { color:inherit; }
+:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+.hero { position:relative; isolation:isolate; overflow:hidden; color:var(--night-ink); background:var(--night); }
+.hero picture img { position:absolute; inset:0; z-index:-2; width:100%; height:100%; object-fit:cover; object-position:70% 50%; }
+.hero::after { content:""; position:absolute; inset:0; z-index:-1; background:linear-gradient(180deg,rgba(14,20,34,.55) 0%,rgba(14,20,34,.72) 55%,rgba(14,20,34,.95) 100%); }
+.wrap { max-width:1120px; margin:0 auto; padding:0 16px; }
+nav { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 0; }
+.brand { display:flex; align-items:center; gap:10px; font:700 16px var(--display); text-decoration:none; }
+.bolt { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; background:var(--accent); color:var(--on-accent); font-size:20px; box-shadow:0 0 0 4px rgba(242,169,0,.25); }
+.nav-link { font-weight:700; font-size:14px; text-decoration:none; padding:9px 14px; border-radius:12px; border:1px solid rgba(255,255,255,.25); white-space:nowrap; }
+.nav-link:hover { border-color:var(--accent); }
+.hero-grid { display:grid; gap:32px; padding:36px 0 56px; align-items:center; }
+.eyebrow { display:inline-flex; gap:8px; align-items:center; font-weight:700; font-size:13px; padding:6px 12px; border-radius:999px; background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.18); }
+.eyebrow i { width:8px; height:8px; border-radius:50%; background:#4cc38a; box-shadow:0 0 0 0 rgba(76,195,138,.6); animation:pulse 2s infinite; }
+h1 { font:700 clamp(32px,7vw,60px)/1.05 var(--display); letter-spacing:-.03em; margin:18px 0 14px; }
+h1 em { font-style:normal; color:var(--accent); }
+.lead { color:var(--night-muted); font-size:clamp(16px,2.2vw,19px); max-width:34ch; margin:0 0 26px; }
+.cta { display:flex; flex-wrap:wrap; gap:10px; }
+.btn { display:inline-flex; align-items:center; gap:10px; font-weight:800; text-decoration:none; padding:14px 20px; border-radius:16px; transition:transform .15s ease, box-shadow .15s ease; }
+.btn.primary { background:var(--accent); color:var(--on-accent); box-shadow:0 10px 30px rgba(242,169,0,.35); }
+.btn.primary:hover { transform:translateY(-2px); box-shadow:0 14px 34px rgba(242,169,0,.45); }
+.btn.ghost { border:1px solid rgba(255,255,255,.3); color:var(--night-ink); }
+.btn.ghost:hover { border-color:var(--accent); }
+.phone { justify-self:center; width:min(100%,370px); padding:14px; border-radius:30px; background:rgba(16,22,36,.75); border:1px solid rgba(255,255,255,.14); box-shadow:0 30px 80px rgba(0,0,0,.45); backdrop-filter:blur(10px); animation:float 6s ease-in-out infinite; }
+.chat-head { display:flex; align-items:center; gap:10px; padding:4px 6px 12px; border-bottom:1px solid rgba(255,255,255,.1); margin-bottom:12px; }
+.chat-head .bolt { width:34px; height:34px; font-size:17px; border-radius:50%; box-shadow:none; }
+.chat-head b { display:block; font-size:14px; } .chat-head small { color:#8fd1ae; font-size:12px; }
+.bubble { background:#1f2a3d; border-radius:16px 16px 16px 6px; padding:12px 14px; font-size:13.5px; line-height:1.5; color:#eef1f6; }
+.bubble p { margin:0; } .bubble p + p { margin-top:8px; }
+.bubble .bar { letter-spacing:1px; font-size:12px; }
+.keys { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+.keys span { text-align:center; font-size:12px; font-weight:700; padding:8px 4px; border-radius:10px; background:rgba(255,255,255,.08); color:#dfe5ee; }
+main section { padding:56px 0 8px; }
+h2 { font:700 clamp(24px,4vw,34px)/1.15 var(--display); letter-spacing:-.02em; margin:0 0 8px; }
+.sub { color:var(--muted); margin:0 0 24px; max-width:56ch; }
+.features { display:grid; gap:12px; }
+.feature { background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:20px; }
+.feature .icon { display:grid; place-items:center; width:44px; height:44px; border-radius:14px; background:var(--accent-soft); font-size:22px; margin-bottom:12px; }
+.feature h3 { margin:0 0 6px; font-size:17px; } .feature p { margin:0; color:var(--muted); }
+.steps { display:grid; gap:12px; counter-reset:step; list-style:none; padding:0; margin:0; }
+.steps li { position:relative; padding:20px 20px 20px 72px; background:var(--surface); border:1px solid var(--line); border-radius:20px; }
+.steps li::before { counter-increment:step; content:counter(step); position:absolute; left:20px; top:18px; display:grid; place-items:center; width:36px; height:36px; border-radius:12px; background:var(--ink); color:var(--bg); font:700 16px var(--display); }
+.steps b { display:block; margin-bottom:2px; } .steps span { color:var(--muted); }
+code { font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--accent-soft); padding:2px 8px; border-radius:8px; }
+.final { margin:56px 0 0; padding:28px 20px; border-radius:24px; background:var(--accent); color:var(--on-accent); display:grid; gap:16px; }
+.final h2 { margin:0; } .final p { margin:0; opacity:.8; }
+.final .btn { background:var(--on-accent); color:#fff; justify-self:start; }
+footer { color:var(--muted); font-size:13px; padding:32px 0 40px; }
+@media (min-width:860px) {
+  .hero-grid { grid-template-columns:1.1fr .9fr; padding:56px 0 88px; }
+  .features { grid-template-columns:repeat(3,1fr); }
+  .steps { grid-template-columns:repeat(3,1fr); }
+  .final { grid-template-columns:1fr auto; align-items:center; padding:36px; }
+}
+@keyframes float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-8px); } }
+@keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(76,195,138,.6); } 70% { box-shadow:0 0 0 10px rgba(76,195,138,0); } 100% { box-shadow:0 0 0 0 rgba(76,195,138,0); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
 </style>
 </head>
 <body>
-<main>
-  <img src="/hero.jpg" width="1280" height="720" alt="Вечірня вулиця і картка з годинами відключень">
-  <h1>Графік світла за вашою адресою</h1>
-  <p>Бот для Волинської області читає графік Волиньобленерго кожні 5 хвилин і пише, коли години змінюються.</p>
-  <div class="card">
-    <p>Відкрийте <a href="https://t.me/volunsvitlo_bot">@volunsvitlo_bot</a> і надішліть населений пункт, вулицю та будинок. Наприклад: Луцьк, Волі, 44а.</p>
+<header class="hero">
+  <picture><img src="/hero.jpg" width="1280" height="720" alt="" fetchpriority="high"></picture>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="/"><span class="bolt" aria-hidden="true">⚡</span>Світло Волині</a>
+      <a class="nav-link" href="https://t.me/volunsvitlo_bot">Відкрити бота</a>
+    </nav>
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow"><i aria-hidden="true"></i>Перевіряю графік кожні 5 хвилин</span>
+        <h1>Знайте, коли вимкнуть світло, <em>заздалегідь</em></h1>
+        <p class="lead">Telegram-бот для Волинської області: графік відключень за вашою адресою і сповіщення, щойно він зміниться.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://t.me/volunsvitlo_bot">⚡ Відкрити @volunsvitlo_bot</a>
+          <a class="btn ghost" href="#how">Як це працює</a>
+        </div>
+      </div>
+      <div class="phone" aria-label="Приклад повідомлення від бота">
+        <div class="chat-head"><span class="bolt" aria-hidden="true">⚡</span><div><b>Світло Волині</b><small>бот</small></div></div>
+        <div class="bubble">
+          <p>🏠 <b>Дім</b><br>📍 Луцьк, Волі, 44а<br>⚡ Черга <b>2.2</b> · Луцький район</p>
+          <p>🟢 <b>Зараз світло є</b><br>⏭ Наступне відключення о <b>14:30</b> (через 1 год 15 хв)</p>
+          <p>📅 <b>Сьогодні, 18.10 · неділя</b><br>🔴 14:30 – 18:00 · 3 год 30 хв</p>
+          <p class="bar">🌙 00–12 🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩<br>☀️ 12–24 🟩🟩🟨🟥🟥🟥🟩🟩🟩🟩🟩🟩</p>
+        </div>
+        <div class="keys"><span>🔄 Оновити</span><span>✏️ Змінити</span><span>🏷 Назва</span></div>
+      </div>
+    </div>
   </div>
+</header>
+<main class="wrap">
+  <section>
+    <h2>Усе про світло в одному чаті</h2>
+    <p class="sub">Бот читає офіційний графік Волиньобленерго і перекладає його на мову вашої адреси.</p>
+    <div class="features">
+      <article class="feature"><div class="icon" aria-hidden="true">⏱</div><h3>Що зараз і що далі</h3><p>Є світло чи ні, коли вимкнуть або увімкнуть і скільки лишилось чекати.</p></article>
+      <article class="feature"><div class="icon" aria-hidden="true">🔔</div><h3>Пише сам</h3><p>Щойно графік змінився або з’явився на завтра, приходить повідомлення.</p></article>
+      <article class="feature"><div class="icon" aria-hidden="true">🏘</div><h3>Кілька адрес</h3><p>Дім, робота, батьки: до 10 адрес із назвами й окремими сповіщеннями.</p></article>
+    </div>
+  </section>
+  <section id="how">
+    <h2>Як почати</h2>
+    <p class="sub">Хвилина, і графік у вашому Telegram.</p>
+    <ol class="steps">
+      <li><b>Відкрийте бота</b><span>Натисніть «Почати» в <a href="https://t.me/volunsvitlo_bot">@volunsvitlo_bot</a>.</span></li>
+      <li><b>Напишіть адресу</b><span>По кроках або одним рядком: <code>Луцьк, Волі, 44а</code></span></li>
+      <li><b>Отримуйте сповіщення</b><span>Графік на сьогодні й завтра, а далі тільки зміни.</span></li>
+    </ol>
+  </section>
+  <div class="final">
+    <div><h2>Світло за розкладом, а не навмання</h2><p>Безкоштовно. Волинська область.</p></div>
+    <a class="btn" href="https://t.me/volunsvitlo_bot">Відкрити бота →</a>
+  </div>
+  <footer>Дані: офіційний графік <a href="https://energy.volyn.ua/spozhyvacham/perervy-u-elektropostachanni/hrafik-vidkliuchen/page.php#move">Волиньобленерго</a>. Бот не пов’язаний з енергокомпанією.</footer>
 </main>
 </body>
 </html>
