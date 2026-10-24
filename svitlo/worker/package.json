@@ -1,0 +1,18 @@
+{
+  "name": "svitlo-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "wrangler": "^4.151.1"
+  }
+}

@@ -1,0 +1,435 @@
+"""Сторінка, де зберігається адреса і показуються сповіщення про відключення."""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import urllib.parse
+from datetime import datetime
+from html import escape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from svitlo.address_input import looks_like_house
+from svitlo.bot import remember_state
+from svitlo.db import Store
+from svitlo.lookup import assign_queue
+from svitlo.monitor import send_telegram, sync
+from svitlo.report import build_report
+from svitlo.schedule import format_address
+from svitlo.source import KYIV, HttpChartClient
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+DEFAULT_DB = PACKAGE_DIR / "data" / "svitlo.db"
+HERO_PATH = PACKAGE_DIR / "static" / "hero.jpg"
+OFFICIAL_SEARCH = (
+    "https://energy.volyn.ua/spozhyvacham/perervy-u-elektropostachanni/"
+    "hrafik-vidkliuchen/page.php#move"
+)
+
+
+class App:
+    def __init__(self, store: Store, client: HttpChartClient, interval_seconds: int = 300) -> None:
+        self.store = store
+        self.client = client
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+
+    def refresh(self) -> list[str]:
+        return sync(self.store, self.client.load())
+
+    def start_background(self) -> None:
+        threading.Thread(target=self._loop, name="svitlo-monitor", daemon=True).start()
+        if os.environ.get("SVITLO_TELEGRAM", "1") == "0":
+            return
+        from svitlo.bot import run_bot
+
+        threading.Thread(
+            target=run_bot,
+            args=(self.store, self.client, self._stop),
+            name="svitlo-bot",
+            daemon=True,
+        ).start()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.refresh()
+            except Exception:
+                self.store.set_setting("last_error", "Перевірка графіка перервалась. Наступна спроба буде автоматично.")
+            self._stop.wait(self.interval_seconds)
+
+
+def make_handler(app: App):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            if path == "/health":
+                self._json({"ok": True, "addresses": len(app.store.list_addresses())})
+                return
+            if path == "/hero.jpg":
+                self._file(HERO_PATH, "image/jpeg")
+                return
+            if path != "/":
+                self._text(404, "Сторінку не знайдено")
+                return
+            self._html(render_page(app, self.path))
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            form = self._form()
+            if path == "/addresses":
+                error = add_address(app, form)
+                self._redirect("/" if not error else "/?error=" + urllib.parse.quote(error))
+                return
+            if path == "/addresses/delete":
+                raw = form.get("id", "")
+                if raw.isdigit():
+                    app.store.delete_address(int(raw))
+                self._redirect("/")
+                return
+            if path == "/check":
+                app.refresh()
+                self._redirect("/")
+                return
+            if path == "/settings":
+                save_settings(app, form)
+                self._redirect("/?settings=1")
+                return
+            self._text(404, "Сторінку не знайдено")
+
+        def log_message(self, fmt: str, *args) -> None:
+            print("[svitlo]", self.address_string(), fmt % args)
+
+        def _form(self) -> dict[str, str]:
+            length = int(self.headers.get("Content-Length") or "0")
+            if length > 20_000:
+                return {}
+            raw = self.rfile.read(length).decode("utf-8", "replace")
+            parsed = urllib.parse.parse_qs(raw, keep_blank_values=True)
+            return {key: values[0] for key, values in parsed.items()}
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _html(self, body: str) -> None:
+            payload = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _file(self, path: Path, content_type: str) -> None:
+            if not path.is_file():
+                self._text(404, "Сторінку не знайдено")
+                return
+            payload = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _text(self, status: int, body: str) -> None:
+            payload = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _json(self, data: dict) -> None:
+            payload = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    return Handler
+
+
+def add_address(app: App, form: dict[str, str]) -> str:
+    city = " ".join(form.get("city", "").split())
+    street = " ".join(form.get("street", "").split())
+    house = " ".join(form.get("house", "").split())
+    if len(city) < 2 or len(city) > 80:
+        return "Вкажіть назву населеного пункту, без слів «місто» чи «село»."
+    if len(street) < 2 or len(street) > 80:
+        return "Вкажіть назву вулиці без «вул.»."
+    if not looks_like_house(house):
+        return "Вкажіть номер будинку, наприклад 15 або 15а."
+    chat_id = app.store.get_setting("telegram_chat_id")
+    address_id = app.store.save_place(city, street, house, chat_id)
+    assign_queue(app.store, address_id, city, street, house)
+    address = app.store.get_address(address_id)
+    groups = []
+    if address is not None and int(address["queue"]) > 0:
+        groups = [(int(address["queue"]), int(address["subqueue"]))]
+    bundle = app.client.load()
+    report = build_report(
+        city=city,
+        street=street,
+        house=house,
+        groups=groups,
+        today=None if bundle.error else bundle.today,
+        tomorrow=None if bundle.error else bundle.tomorrow,
+    )
+    if chat_id:
+        status = send_telegram(app.store.get_setting("telegram_token"), chat_id, report)
+        app.store.add_notification(address_id, report, status)
+    remember_state(app.store, address_id, bundle)
+    app.refresh()
+    return ""
+
+
+def save_settings(app: App, form: dict[str, str]) -> None:
+    chat_id = form.get("telegram_chat_id", "").strip()
+    token = form.get("telegram_token", "").strip()
+    if form.get("clear_telegram") == "1":
+        app.store.set_setting("telegram_token", "")
+        app.store.set_setting("telegram_chat_id", "")
+        return
+    if chat_id:
+        app.store.set_setting("telegram_chat_id", chat_id)
+    if token:
+        app.store.set_setting("telegram_token", token)
+    if form.get("send_test") == "1":
+        status = send_telegram(
+            app.store.get_setting("telegram_token"),
+            app.store.get_setting("telegram_chat_id"),
+            "Перевірка сповіщень. Якщо ви це бачите, повідомлення про відключення приходитимуть сюди.",
+        )
+        app.store.set_setting("telegram_test", status or "спочатку вкажіть токен і chat id")
+
+
+def render_page(app: App, request_path: str = "/") -> str:
+    addresses = app.store.list_addresses()
+    notices = app.store.list_notifications()
+    parts = urllib.parse.urlsplit(request_path)
+    query = urllib.parse.parse_qs(parts.query)
+    error = query.get("error", [""])[0]
+    settings_saved = "settings" in query
+    last_error = app.store.get_setting("last_error")
+    last_check = _local_time(app.store.get_setting("last_check"))
+    today_label = _date_label(app.store.get_setting("today_date"))
+    tomorrow_label = _date_label(app.store.get_setting("tomorrow_date"))
+    today_updated = _local_time(app.store.get_setting("today_updated"))
+    token_saved = bool(app.store.get_setting("telegram_token"))
+    chat_saved = app.store.get_setting("telegram_chat_id")
+    test_status = app.store.get_setting("telegram_test")
+    cards = "\n".join(_address_card(app.store, row) for row in addresses) or (
+        '<p class="empty">Адрес ще немає. Додайте населений пункт, і перевірка піде сама.</p>'
+    )
+    feed = "\n".join(_notice(row) for row in notices) or '<p class="empty">Повідомлень ще немає.</p>'
+    banner = ""
+    if error:
+        banner = f'<p class="banner bad">{escape(error)}</p>'
+    elif last_error:
+        banner = f'<p class="banner bad">{escape(last_error)}</p>'
+    elif settings_saved:
+        banner = '<p class="banner">Налаштування Telegram збережено.</p>'
+    chart_line = _chart_line(today_label, today_updated, tomorrow_label)
+    return f"""<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Графік світла</title>
+<style>
+:root {{ color-scheme: light; --ink:#172033; --muted:#5c6b80; --line:#d7e0ea; --bg:#eef3f8; --card:#fff; --accent:#1d4e89; --accent-2:#163e6b; --bad:#9f1239; --ok:#0f766e; }}
+* {{ box-sizing: border-box; }}
+body {{ margin:0; font:16px/1.45 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }}
+main {{ max-width:980px; margin:0 auto; padding:28px 16px 64px; }}
+.hero {{ margin:0 0 22px; border-radius:20px; overflow:hidden; line-height:0; box-shadow:0 16px 40px rgba(14,28,47,.18); }}
+.hero img {{ width:100%; height:auto; max-height:420px; object-fit:cover; object-position:center 42%; display:block; }}
+h1 {{ font-size:32px; line-height:1.15; margin:0 0 8px; }}
+h2 {{ font-size:20px; margin:28px 0 12px; }}
+.lead {{ margin:0; color:var(--muted); max-width:68ch; }}
+.grid {{ display:grid; gap:16px; grid-template-columns:1.2fr .8fr; }}
+.card, form.panel {{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }}
+label {{ display:block; font-size:14px; margin:10px 0 4px; }}
+input, select {{ width:100%; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; background:#fff; }}
+.row {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+button, .button {{ border:0; border-radius:999px; padding:10px 16px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }}
+button.secondary, .button.secondary {{ background:#e8eef5; color:var(--ink); }}
+button.danger {{ background:#fff; color:var(--bad); border:1px solid #f3c3cf; }}
+.actions {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }}
+.banner {{ border-radius:12px; padding:12px 14px; background:#e7f5ef; color:var(--ok); }}
+.banner.bad {{ background:#fff1f2; color:var(--bad); }}
+.meta {{ color:var(--muted); font-size:14px; }}
+.address {{ display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }}
+.hours {{ margin:8px 0 0; }}
+.hours strong {{ font-weight:650; }}
+.ok {{ color:var(--ok); }}
+.out {{ color:#9a3412; }}
+.empty {{ color:var(--muted); margin:0; }}
+.notice {{ padding:10px 0; border-top:1px solid var(--line); }}
+.notice:first-child {{ border-top:0; padding-top:0; }}
+.hint {{ color:var(--muted); font-size:14px; }}
+a {{ color:var(--accent); }}
+@media (max-width:800px) {{ .grid, .row {{ grid-template-columns:1fr; }} h1 {{ font-size:28px; }} }}
+</style>
+</head>
+<body>
+<main>
+  <figure class="hero">
+    <img src="/hero.jpg" width="1280" height="720" alt="Вечірня вулиця: у частині будинків світяться вікна, на передньому плані картка з годинами відключень">
+  </figure>
+  <h1>Графік світла за вашою адресою</h1>
+  <p class="lead">Надішліть боту населений пункт, вулицю і будинок. У відповідь прийде картка графіка на сьогодні й на завтра.</p>
+  <div class="grid">
+    <article class="card"><strong>1. Населений пункт</strong><p class="hint">Луцьк, без слова «місто».</p></article>
+    <article class="card"><strong>2. Вулиця</strong><p class="hint">Волі, без «вул.».</p></article>
+    <article class="card"><strong>3. Будинок</strong><p class="hint">44а, літера разом із номером.</p></article>
+  </div>
+  <p class="meta">{chart_line} Остання перевірка: {escape(last_check or "ще не було")}.</p>
+  {banner}
+  <div class="grid">
+    <section>
+      <h2>Адреси</h2>
+      {cards}
+    </section>
+    <section>
+      <h2>Додати адресу</h2>
+      <form class="panel" method="post" action="/addresses">
+        <label for="city">Населений пункт</label>
+        <input id="city" name="city" required maxlength="80" placeholder="Наприклад, Луцьк" autocomplete="address-level2">
+        <label for="street">Вулиця</label>
+        <input id="street" name="street" required maxlength="80" placeholder="Лесі Українки" autocomplete="off">
+        <label for="house">Будинок</label>
+        <input id="house" name="house" required maxlength="12" placeholder="15" autocomplete="off">
+        <p class="hint">У боті <a href="https://t.me/volunsvitlo_bot">@volunsvitlo_bot</a> можна надіслати три рядки: населений пункт, вулиця, будинок. Назву пункту пишіть без «місто», вулицю без «вул.». Години беруться з <a href="{OFFICIAL_SEARCH}">графіка Волиньобленерго</a>.</p>
+        <div class="actions"><button type="submit">Стежити за адресою</button></div>
+      </form>
+      <form method="post" action="/check" class="actions"><button class="secondary" type="submit">Перевірити зараз</button></form>
+    </section>
+  </div>
+  <h2>Повідомлення</h2>
+  <section class="card">{feed}</section>
+  <h2>Telegram</h2>
+  <form class="panel" method="post" action="/settings">
+    <p class="hint">Необов’язково. Якщо вказати бота, ті самі повідомлення приходитимуть у чат. Токен створюється в BotFather.</p>
+    <label for="telegram_chat_id">Chat id</label>
+    <input id="telegram_chat_id" name="telegram_chat_id" value="{escape(chat_saved)}" placeholder="123456789" autocomplete="off">
+    <label for="telegram_token">Токен бота</label>
+    <input id="telegram_token" name="telegram_token" type="password" placeholder="{"токен уже збережено" if token_saved else "123456:ABC"}" autocomplete="off">
+    <div class="actions">
+      <button type="submit" name="send_test" value="1">Зберегти і надіслати перевірку</button>
+      <button class="secondary" type="submit">Лише зберегти</button>
+      <button class="danger" type="submit" name="clear_telegram" value="1">Прибрати Telegram</button>
+    </div>
+    {f'<p class="meta">Остання перевірка Telegram: {escape(test_status)}</p>' if test_status else ''}
+  </form>
+  <p class="hint">Волиньобленерго зазвичай публікує графік щогодини, але вимкнення може початися тієї ж хвилини, коли таблиця змінилась. Тому графік тут перечитується кожні {app.interval_seconds // 60} хв. Сам час увімкнення на місці може відрізнятися від таблиці на 20–30 хвилин.</p>
+</main>
+</body>
+</html>"""
+
+
+def _address_card(store: Store, row) -> str:
+    place = format_address(row["city"], row["street"], row["queue"], row["subqueue"], row["house"])
+    today = _hours_line(store, int(row["id"]), "today", "Сьогодні")
+    tomorrow = _hours_line(store, int(row["id"]), "tomorrow", "На завтра")
+    return f"""<article class="card">
+      <div class="address">
+        <div>
+          <strong>{escape(place)}</strong>
+          <p class="hours">{today}</p>
+          <p class="hours">{tomorrow}</p>
+        </div>
+        <form method="post" action="/addresses/delete" onsubmit="return confirm('Прибрати цю адресу зі стеження?')">
+          <input type="hidden" name="id" value="{int(row["id"])}">
+          <button class="danger" type="submit">Прибрати</button>
+        </form>
+      </div>
+    </article>"""
+
+
+def _hours_line(store: Store, address_id: int, part: str, title: str) -> str:
+    state = store.get_state(address_id, part)
+    if state is None:
+        if part == "tomorrow":
+            return f'<span class="meta">{escape(title)}: графік ще не опубліковано.</span>'
+        return f'<span class="meta">{escape(title)}: даних ще немає.</span>'
+    ranges = json.loads(state["ranges_json"])
+    if not ranges:
+        return f'<span class="ok">{escape(title)}, {escape(state["schedule_date"])}: відключень немає.</span>'
+    text = ", ".join(f"{start}–{end}" for start, end in ranges)
+    return f'<span class="out">{escape(title)}, {escape(state["schedule_date"])}: {escape(text)}.</span>'
+
+
+def _notice(row) -> str:
+    status = f' <span class="meta">({escape(row["telegram_status"])})</span>' if row["telegram_status"] else ""
+    when = _local_time(row["created_at"])
+    body = escape(row["body"]).replace("\n", "<br>")
+    return f'<p class="notice">{body}{status}<br><span class="meta">{escape(when)}</span></p>'
+
+
+def _chart_line(today_label: str, today_updated: str, tomorrow_label: str) -> str:
+    if not today_label and not tomorrow_label:
+        return "Графік ще не зчитано."
+    today = f"Сьогоднішній графік: {today_label}" + (f", оновлено {today_updated}" if today_updated else "")
+    if tomorrow_label:
+        return f"{today}. На завтра вже є графік {tomorrow_label}."
+    return f"{today}. На завтра графіка ще немає."
+
+
+def _date_label(iso_date: str) -> str:
+    if not iso_date:
+        return ""
+    year, month, day = iso_date.split("-")
+    return f"{day}.{month}.{year}"
+
+
+def _local_time(iso_value: str) -> str:
+    if not iso_value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(iso_value)
+    except ValueError:
+        return iso_value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KYIV)
+    return parsed.astimezone(KYIV).strftime("%d.%m.%Y %H:%M")
+
+
+def serve(app: App, host: str, port: int) -> None:
+    server = ThreadingHTTPServer((host, port), make_handler(app))
+    print(f"Графік світла: http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Зупинено")
+    finally:
+        app._stop.set()
+        server.server_close()
+
+
+def main() -> None:
+    os.environ.setdefault("SVITLO_LIVE_SEARCH", "1")
+    host = os.environ.get("SVITLO_HOST", "127.0.0.1")
+    port = int(os.environ.get("SVITLO_PORT", "8765"))
+    interval = int(os.environ.get("SVITLO_INTERVAL_SECONDS", "300"))
+    db_path = os.environ.get("SVITLO_DB", str(DEFAULT_DB))
+    store = Store(db_path)
+    from svitlo.catalog import load_bundled_catalog
+
+    load_bundled_catalog(store)
+    app = App(store, HttpChartClient(), interval_seconds=interval)
+    app.start_background()
+    # Дати першій перевірці секунду, щоб не блокувати запуск, якщо мережа мовчить.
+    threading.Thread(target=app.refresh, name="svitlo-first-check", daemon=True).start()
+    time.sleep(0.05)
+    serve(app, host, port)
+
+
+if __name__ == "__main__":
+    main()
