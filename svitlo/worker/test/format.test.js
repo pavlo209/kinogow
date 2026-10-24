@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addressCard, duration, kyivNow, noticeText, nowStatus, timeline } from "../src/format.js";
+import { addressCard, duration, kyivNow, noticeText, nowStatus, timeline, unpublishedNotice } from "../src/format.js";
 
 const chart = (ranges, iso = "2026-10-18", label = "18.10.2026") => ({ iso, label, image: "", ranges: () => ranges });
 // 15:00 за Києвом.
@@ -11,6 +11,13 @@ test("duration reads naturally in Ukrainian", () => {
   assert.equal(duration(45), "45 хв");
   assert.equal(duration(120), "2 год");
   assert.equal(duration(0), "0 хв");
+});
+
+test("unpublished notice names the day and promises a follow-up", () => {
+  const text = unpublishedNotice("24.10.2026");
+  assert.match(text, /24\.10\.2026/);
+  assert.match(text, /ще не опублікувало/);
+  assert.match(text, /щойно він з’явиться/);
 });
 
 test("kyivNow returns the Kyiv date and minute of day", () => {

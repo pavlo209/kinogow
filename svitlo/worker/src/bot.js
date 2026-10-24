@@ -2,7 +2,7 @@ import { adminAccess, adminCookie, adminLink } from "./access.js";
 import { adminDigest, renderAdmin, renderLocked, summarize } from "./admin.js";
 import { districtFor, groupsFor } from "./catalog.js";
 import { ChartDecoder, rangesFor, readPng } from "./decode.js";
-import { noticeText } from "./format.js";
+import { noticeText, unpublishedNotice } from "./format.js";
 import { addDays, imageUrl, kyivDate, labelFromIso, readOption } from "./source.js";
 import { Store } from "./store.js";
 import { noticeKind, partState } from "./sync.js";
@@ -57,10 +57,11 @@ export class SvitloBot {
   async alarm() {
     try {
       if (this.phase === "sync") return await this.syncStep();
+      if (this.phase === "missing") return await this.missingStep();
       if (this.phase === "next") return await this.startNextJob();
       await this.parseStep();
     } catch (error) {
-      if (this.phase === "sync") {
+      if (this.phase === "sync" || this.phase === "missing") {
         this.store.metaSet("last_error", `Розсилка зупинилась: ${String(error?.message || error).slice(0, 200)}`);
         this.phase = "";
         return;
@@ -182,6 +183,14 @@ export class SvitloBot {
     }
     if (!todayImage) {
       this.store.metaSet("last_error", "Графік на сьогодні ще не опубліковано.");
+      this.store.metaSet("last_check", new Date().toISOString());
+      const today = kyivDate();
+      if (this.store.metaGet("unpublished_notice") !== today) {
+        this.missingDate = today;
+        this.missingChats = null;
+        this.phase = "missing";
+        await this.ctx.storage.setAlarm(Date.now() + 50);
+      }
       return;
     }
     this.queue = [["today", todayImage, kyivDate(today.date), today.date || ""]];
@@ -253,6 +262,39 @@ export class SvitloBot {
     this.job = null;
     this.queue = [];
     this.phase = "";
+  }
+
+  async missingStep() {
+    if (!this.missingChats) {
+      const chats = new Set();
+      for (const address of this.store.listAddresses()) {
+        if (address.chat_id) chats.add(String(address.chat_id));
+      }
+      this.missingChats = [...chats];
+      this.missingIndex = 0;
+    }
+    const chatId = this.missingChats[this.missingIndex];
+    if (!chatId) {
+      this.store.metaSet("unpublished_notice", this.missingDate || kyivDate());
+      this.store.metaSet("last_check", new Date().toISOString());
+      this.phase = "";
+      this.missingChats = null;
+      return;
+    }
+    const user = this.store.getUser(chatId);
+    const addresses = this.store.listForChat(chatId);
+    const muted = addresses.length > 0 && addresses.every((address) => Number(address.muted));
+    if (!Number(user?.blocked) && !muted) {
+      const label = labelFromIso(this.missingDate || kyivDate());
+      const outcome = await deliver(this.telegram, chatId, { text: unpublishedNotice(label) });
+      if (outcome.retryAfter) {
+        await this.ctx.storage.setAlarm(Date.now() + outcome.retryAfter * 1000);
+        return;
+      }
+      if (outcome.blocked) this.store.markBlocked(chatId);
+    }
+    this.missingIndex += 1;
+    await this.ctx.storage.setAlarm(Date.now() + 80);
   }
 
   async startSync(clearTomorrow) {

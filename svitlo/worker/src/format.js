@@ -101,6 +101,16 @@ export function addressCard({ address, district = "", groups, today, tomorrow, n
   return lines.join("\n");
 }
 
+export function unpublishedNotice(label) {
+  return [
+    "💡 <b>Графік на сьогодні</b>",
+    "",
+    `📅 <b>Сьогодні, ${label}</b>`,
+    "⏳ Волиньобленерго ще не опублікувало графік.",
+    "Напишу, щойно він з’явиться.",
+  ].join("\n");
+}
+
 export function noticeText({ address, part, chart, kind, now = new Date() }) {
   const clock = kyivNow(now);
   const group = [Number(address.queue), Number(address.subqueue)];
